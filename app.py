@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import StringIO
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="centered")
 
@@ -19,7 +19,7 @@ DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,pr
 11,2026-07-09,European Championship,National,Germany,Italy,Германия,Италия,1,62.4,37.6,2.32,3.05,3.15,Recent form slightly favors Germany.,Германия е малко по-стабилна в момента.,normal,0.57,0.62,0.56,0.09
 12,2026-07-09,Bulgarian League,Club,Arda,Slavia Sofia,Арда,Славия София,1,74.2,25.8,1.92,3.10,3.75,Arda looks fitter with fewer absences.,Арда има добър баланс и по-нисък риск.,value,0.72,0.75,0.68,0.11
 13,2026-07-10,Champions League,Club,Barcelona,Dortmund,Барселона,Дортмунд,1,79.2,20.8,1.66,3.60,4.90,Barcelona create more pressure at home.,Барселона е по-опасен домакин и има добър импулс.,value,0.77,0.81,0.70,0.13
-14,2026-07-10,World Cup,National,Portugal,England,Португалия,Англия,X,61.8,38.2,2.35,3.15,3.00,Both teams have balanced profiles and low gap.,Мачът е близък и равенството изглежда доста реално.,normal,0.60,0.64,0.59,0.08
+14,2026-07-10,World Cup,National,Portugal,England,X,61.8,38.2,2.35,3.15,3.00,Both teams have balanced profiles and low gap.,Мачът е близък и равенството изглежда доста реално.,normal,0.60,0.64,0.59,0.08
 15,2026-07-10,European Championship,National,Spain,Germany,Испания,Германия,1,65.6,34.4,2.15,3.25,3.40,Spain control tempo well in current form.,Испания е леко по-силна в контрол на мача.,normal,0.62,0.67,0.61,0.07
 """
 
@@ -72,6 +72,7 @@ def value_rank_score(row):
         + row["news_score"] * 100 * 0.15
     )
 
+df = load_data()
 all_dates = sorted(df["match_date"].dropna().unique())
 
 if not all_dates:
@@ -86,10 +87,8 @@ selected_date = st.date_input(
     value=default_date,
     min_value=all_dates[0],
     max_value=all_dates[-1],
-    format="DD/MM/YYYY"
+    format="DD/MM/YYYY",
 )
-)
-st.session_state["selected_date"] = selected_date
 
 current_df = df[df["match_date"] == selected_date].copy()
 popular_league = current_df["league"].value_counts().idxmax() if not current_df.empty else "No data"
