@@ -72,15 +72,22 @@ def value_rank_score(row):
         + row["news_score"] * 100 * 0.15
     )
 
-df = load_data()
-all_dates = sorted(df["match_date"].unique())
+all_dates = sorted(df["match_date"].dropna().unique())
+
+if not all_dates:
+    st.error("Няма налични дати в данните.")
+    st.stop()
+
 today_default = date.today()
+default_date = today_default if today_default in all_dates else all_dates[-1]
+
 selected_date = st.date_input(
     "Date",
-    value=selected_date if "selected_date" in st.session_state else (today_default if today_default in all_dates else all_dates[-1]),
+    value=default_date,
     min_value=all_dates[0],
     max_value=all_dates[-1],
     format="DD/MM/YYYY"
+)
 )
 st.session_state["selected_date"] = selected_date
 
