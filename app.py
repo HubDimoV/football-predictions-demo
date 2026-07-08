@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
 from io import StringIO
 
 st.set_page_config(
@@ -26,11 +25,13 @@ DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,pr
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv(StringIO(DATA_CSV))
-    df["match_date"] = pd.to_datetime(df["match_date"], format="%Y-%m-%d").dt.date
-    return df
+    return pd.read_csv(StringIO(DATA_CSV))
+
 def color_percent(value, green_if_high=True):
-    color = "#1a7f37" if (value >= 50 if green_if_high else value < 50) else "#d1242f"
+    if green_if_high:
+        color = "#1a7f37" if value >= 50 else "#d1242f"
+    else:
+        color = "#1a7f37" if value <= 50 else "#d1242f"
     return f"<span style='color:{color}; font-weight:700'>{value:.1f}%</span>"
 
 def outcome_label(x):
@@ -44,15 +45,20 @@ def market_reason(row):
     return "Коефициентите са в нормален диапазон."
 
 df = load_data()
-all_dates = sorted(df["match_date"].unique())
-selected_date = st.selectbox("Date", all_dates, index=len(all_dates)-1, format_func=lambda d: d.strftime("%d.%m.%Y"))
+all_dates = sorted(df["match_date"].dropna().unique())
+selected_date = st.selectbox(
+    "Date",
+    all_dates,
+    index=len(all_dates) - 1,
+    format_func=lambda d: d
+)
 
 day_df = df[df["match_date"] == selected_date].copy()
 
 st.markdown(
     f"""
     <div style="font-size:1.8rem;font-weight:800">Football Predictions</div>
-    <div style="color:#5b6573;margin-top:0.15rem">Прогнози за {selected_date.strftime("%d.%m.%Y")}</div>
+    <div style="color:#5b6573;margin-top:0.15rem">Прогнози за {selected_date}</div>
     """,
     unsafe_allow_html=True,
 )
@@ -69,78 +75,3 @@ search = st.text_input("Search team or league", placeholder="Напр. Ливъ�
 league_options = ["All"] + list(day_df["league"].drop_duplicates())
 selected_league = st.selectbox("League / tournament", league_options)
 
-if search:
-    q = search.lower()
-    day_df = day_df[
-        day_df["home"].str.lower().str.contains(q)
-        | day_df["away"].str.lower().str.contains(q)
-        | day_df["home_bg"].str.lower().str.contains(q)
-        | day_df["away_bg"].str.lower().str.contains(q)
-        | day_df["league"].str.lower().str.contains(q)
-        | day_df["tournament"].str.lower().str.contains(q)
-    ]
-
-if selected_league != "All":
-    day_df = day_df[day_df["league"] == selected_league]
-
-tab_all, tab_secure, tab_risky = st.tabs(["All", "Most secure", "Most risky"])
-
-with tab_all:
-    leagues = day_df["league"].drop_duplicates().tolist()
-    for league in leagues:
-        league_df = day_df[day_df["league"] == league].sort_values(["match_id"])
-        st.markdown(f"### {league}")
-        st.caption("Лигата е групирана с мачовете под нея.")
-        for _, r in league_df.iterrows():
-            with st.container(border=True):
-                st.markdown(
-                    f"**{r['home']}**  \n"
-                    f"<span style='font-size:0.95rem;color:#5b6573'>{r['home_bg']}</span>  \n"
-                    f"vs  \n"
-                    f"**{r['away']}**  \n"
-                    f"<span style='font-size:0.95rem;color:#5b6573'>{r['away_bg']}</span>",
-                    unsafe_allow_html=True,
-                )
-                st.caption(f"{r['tournament']} • {r['match_date'].strftime('%d.%m.%Y')}")
-                c1, c2, c3 = st.columns(3)
-                c1.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
-                c2.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], green_if_high=True)}", unsafe_allow_html=True)
-                c3.markdown(f"**Risk**  \n{color_percent(r['risk_score'], green_if_high=False)}", unsafe_allow_html=True)
-                with st.expander("Details"):
-                    st.write(r["summary_bg"])
-                    st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
-                    st.write(r["news_note"])
-                    st.write(market_reason(r))
-
-with tab_secure:
-    secure_df = day_df.sort_values(["confidence_score", "risk_score"], ascending=[False, True]).head(max(1, round(len(day_df) * 0.3)))
-    for _, r in secure_df.iterrows():
-        with st.container(border=True):
-            st.markdown(f"**{r['home']}** / **{r['away']}**")
-            st.markdown(f"<span style='color:#5b6573'>{r['home_bg']} vs {r['away_bg']}</span>", unsafe_allow_html=True)
-            st.markdown(f"League: {r['league']} • Tag: {r['tournament']}")
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
-            c2.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], green_if_high=True)}", unsafe_allow_html=True)
-            c3.markdown(f"**Risk**  \n{color_percent(r['risk_score'], green_if_high=False)}", unsafe_allow_html=True)
-            with st.expander("Details"):
-                st.write(r["summary_bg"])
-                st.write(f"Причина: {r['news_note']}")
-                st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
-
-with tab_risky:
-    risky_df = day_df.sort_values(["raw_value_score", "odds_x", "confidence_score"], ascending=[False, False, True]).head(max(1, round(len(day_df) * 0.4)))
-    for _, r in risky_df.iterrows():
-        with st.container(border=True):
-            st.markdown(f"**{r['home']}** / **{r['away']}**")
-            st.markdown(f"<span style='color:#5b6573'>{r['home_bg']} vs {r['away_bg']}</span>", unsafe_allow_html=True)
-            st.markdown(f"League: {r['league']} • Tag: {r['tournament']}")
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
-            c2.markdown(f"**Value**  \n{color_percent(r['raw_value_score']*100, green_if_high=True)}", unsafe_allow_html=True)
-            c3.markdown(f"**Risk**  \n{color_percent(r['risk_score'], green_if_high=False)}", unsafe_allow_html=True)
-            with st.expander("Details"):
-                st.write(r["summary_bg"])
-                st.write("Висок коефициент с реален шанс при комбинация от форма, новини и пазар.")
-                st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
-                st.write(f"{market_reason(r)}")
