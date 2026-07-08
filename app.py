@@ -27,7 +27,8 @@ DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,pr
 def load_data():
     df = pd.read_csv(StringIO(DATA_CSV))
     df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce").dt.date
-    return df.dropna(subset=["match_date"]).copy()
+    df = df.dropna(subset=["match_date"]).copy()
+    return df
 
 def color_percent(value, positive=True):
     color = "#1a7f37" if (value >= 50 if positive else value <= 50) else "#d1242f"
@@ -69,7 +70,15 @@ def top_pick_score(row):
     )
 
 df = load_data()
-all_dates = sorted(df["match_date"].unique())
+if df.empty:
+    st.error("Няма валидни данни в приложението.")
+    st.stop()
+
+all_dates = sorted(df["match_date"].dropna().unique())
+if not all_dates:
+    st.error("Няма налични дати в данните.")
+    st.stop()
+
 selected_date = st.date_input(
     "Date",
     value=all_dates[-1],
@@ -188,22 +197,23 @@ with tab_risky:
 
 with tab_top:
     future_df = df[(df["match_date"] >= selected_date) & (df["match_date"] <= selected_date + timedelta(days=2))].copy()
-    future_df["score"] = future_df.apply(top_pick_score, axis=1)
-    future_df = future_df.sort_values(["score", "confidence_score"], ascending=[False, False]).head(5)
     if future_df.empty:
         st.info("Няма налични мачове за следващите 2-3 дни.")
-    for _, r in future_df.iterrows():
-        with st.container(border=True):
-            st.markdown("<div style='display:inline-block;background:#1f6feb;color:white;padding:0.35rem 0.65rem;border-radius:0.6rem;font-weight:700'>TOP PICK</div>", unsafe_allow_html=True)
-            st.markdown(f"**{r['home']}** / **{r['away']}**")
-            st.markdown(f"<span style='color:#8b93a7'>{r['home_bg']} vs {r['away_bg']}</span>", unsafe_allow_html=True)
-            st.caption(f"{r['league']} • {r['match_date']} • {r['tournament']}")
-            a, b, c = st.columns(3)
-            a.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
-            b.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], True)}", unsafe_allow_html=True)
-            c.markdown(f"**Value**  \n{color_percent(r['raw_value_score']*100, True)}", unsafe_allow_html=True)
-            with st.expander("Details"):
-                st.write(r["summary_bg"])
-                st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
-                st.write(r["news_note"])
-                st.write("Препоръка за кратък прозорец според общия score.")
+    else:
+        future_df["score"] = future_df.apply(top_pick_score, axis=1)
+        future_df = future_df.sort_values(["score", "confidence_score"], ascending=[False, False]).head(5)
+        for _, r in future_df.iterrows():
+            with st.container(border=True):
+                st.markdown("<div style='display:inline-block;background:#1f6feb;color:white;padding:0.35rem 0.65rem;border-radius:0.6rem;font-weight:700'>TOP PICK</div>", unsafe_allow_html=True)
+                st.markdown(f"**{r['home']}** / **{r['away']}**")
+                st.markdown(f"<span style='color:#8b93a7'>{r['home_bg']} vs {r['away_bg']}</span>", unsafe_allow_html=True)
+                st.caption(f"{r['league']} • {r['match_date']} • {r['tournament']}")
+                a, b, c = st.columns(3)
+                a.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
+                b.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], True)}", unsafe_allow_html=True)
+                c.markdown(f"**Value**  \n{color_percent(r['raw_value_score']*100, True)}", unsafe_allow_html=True)
+                with st.expander("Details"):
+                    st.write(r["summary_bg"])
+                    st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
+                    st.write(r["news_note"])
+                    st.write("Препоръка за кратък прозорец според общия score.")
