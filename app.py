@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from io import StringIO
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="centered")
@@ -22,18 +21,81 @@ DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,pr
 14,2026-07-10,World Cup,National,Portugal,England,X,61.8,38.2,2.35,3.15,3.00,Both teams have balanced profiles and low gap.,Мачът е близък и равенството изглежда доста реално.,normal,0.60,0.64,0.59,0.08
 15,2026-07-10,European Championship,National,Spain,Germany,Испания,Германия,1,65.6,34.4,2.15,3.25,3.40,Spain control tempo well in current form.,Испания е леко по-силна в контрол на мача.,normal,0.62,0.67,0.61,0.07"""
 
-@st.cache_data
 def load_data():
     lines = DATA_CSV.strip().split("\n")
+    header = lines[0].split(",")
     data = []
     for line in lines[1:]:
         parts = line.split(",", 20)
-        if len(parts) >= 21:
+        if len(parts) == 21:
             data.append(parts)
-    df = pd.DataFrame(data, columns=lines[0].split(","))
-    df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-    df = df.dropna(subset=["match_date"]).copy()
+    df = pd.DataFrame(data, columns=header)
+    df["match_date"] = pd.to_datetime(df["match_date"], format="%Y-%m-%d")
     return df
+
+df = load_data()
+
+if df.empty:
+    st.error("Няма заредени данни.")
+    st.stop()
+
+all_dates = sorted(df["match_date"].dropna().unique().tolist())
+if not all_dates:
+    st.error("Няма налични дати.")
+    st.stop()
+
+selected_date = st.date_input(
+    "Date",
+    value=all_dates[-1].date(),
+    min_value=all_dates[0].date(),
+    max_value=all_dates[-1].date(),
+    format="DD/MM/YYYY",
+)
+
+day_df = df[df["match_date"].dt.date == selected_date].copy()
+
+if day_df.empty:
+    st.warning(f"Няма мачове за {selected_date.strftime('%d.%m.%Y')}.")
+    st.stop()
+
+popular_league = day_df["league"].value_counts().idxmax()
+
+st.markdown(
+    f"""
+    <div style="font-size:1.9rem;font-weight:800">Football Predictions</div>
+    <div style="color:#6b7280;margin-top:0.2rem">Прогнози за {selected_date.strftime('%d.%m.%Y')}</div>
+    <div style="margin-top:0.3rem;color:#8aa4ff;font-weight:600">Най-популярна лига: {popular_league}</div>
+    """,
+    unsafe_allow_html=True,
+)
+
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.metric("Matches", len(day_df))
+with c2:
+    st.metric("Leagues", day_df["league"].nunique())
+with c3:
+    st.metric("Tags", day_df["tournament"].nunique())
+with c4:
+    st.metric("Top 3 days", len(df[(df["match_date"].dt.date >= selected_date) & (df["match_date"].dt.date <= (selected_date + timedelta(days=2)))]))
+
+search = st.text_input("Search team or league", placeholder="Напр. Ливърпул, Champions League, Левски")
+league_options = ["All"] + list(day_df["league"].drop_duplicates())
+selected_league = st.selectbox("League / tournament", league_options)
+
+filtered = day_df.copy()
+if search:
+    q = search.lower()
+    filtered = filtered[
+        filtered["home"].str.lower().str.contains(q)
+        | filtered["away"].str.lower().str.contains(q)
+        | filtered["home_bg"].str.lower().str.contains(q)
+        | filtered["away_bg"].str.lower().str.contains(q)
+        | filtered["league"].str.lower().str.contains(q)
+        | filtered["tournament"].str.lower().str.contains(q)
+    ]
+if selected_league != "All":
+    filtered = filtered[filtered["league"] == selected_league]
 
 def color_percent(value, positive=True):
     color = "#1a7f37" if (value >= 50 if positive else value <= 50) else "#d1242f"
@@ -74,77 +136,6 @@ def top_pick_score(row):
         + row["news_score"] * 100 * 0.15
     )
 
-@st.cache_data
-def load_data():
-    lines = DATA_CSV.strip().split("\n")
-    data = []
-    for line in lines[1:]:
-        parts = line.split(",", 20)
-        if len(parts) >= 21:
-            data.append(parts[:21])
-    df = pd.DataFrame(data, columns=lines[0].split(","))
-    df["match_date"] = pd.to_datetime(df["match_date"], format="%Y-%m-%d", errors="coerce")
-    df = df.dropna(subset=["match_date"]).copy()
-    st.write("Rows loaded:", len(df))
-    return df
-
-all_dates = sorted(df["match_date"].dropna().unique())
-if not all_dates:
-    st.error("Няма налични дати в данните.")
-    st.stop()
-
-selected_date = st.date_input(
-    "Date",
-    value=all_dates[-1],
-    min_value=all_dates[0],
-    max_value=all_dates[-1],
-    format="DD/MM/YYYY",
-)
-
-day_df = df[df["match_date"] == selected_date].copy()
-if day_df.empty:
-    st.warning("Няма мачове за избраната дата.")
-    st.stop()
-
-popular_league = day_df["league"].value_counts().idxmax()
-
-st.markdown(
-    f"""
-    <div style="font-size:1.9rem;font-weight:800">Football Predictions</div>
-    <div style="color:#6b7280;margin-top:0.2rem">Прогнози за {selected_date.strftime('%d.%m.%Y')}</div>
-    <div style="margin-top:0.3rem;color:#8aa4ff;font-weight:600">Най-популярна лига: {popular_league}</div>
-    """,
-    unsafe_allow_html=True,
-)
-
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.metric("Matches", len(day_df))
-with c2:
-    st.metric("Leagues", day_df["league"].nunique())
-with c3:
-    st.metric("Tags", day_df["tournament"].nunique())
-with c4:
-    st.metric("Top 3 days", len(df[(df["match_date"] >= selected_date) & (df["match_date"] <= selected_date + timedelta(days=2))]))
-
-search = st.text_input("Search team or league", placeholder="Напр. Ливърпул, Champions League, Левски")
-league_options = ["All"] + list(day_df["league"].drop_duplicates())
-selected_league = st.selectbox("League / tournament", league_options)
-
-filtered = day_df.copy()
-if search:
-    q = search.lower()
-    filtered = filtered[
-        filtered["home"].str.lower().str.contains(q)
-        | filtered["away"].str.lower().str.contains(q)
-        | filtered["home_bg"].str.lower().str.contains(q)
-        | filtered["away_bg"].str.lower().str.contains(q)
-        | filtered["league"].str.lower().str.contains(q)
-        | filtered["tournament"].str.lower().str.contains(q)
-    ]
-if selected_league != "All":
-    filtered = filtered[filtered["league"] == selected_league]
-
 tab_day, tab_secure, tab_risky, tab_top = st.tabs(["Day", "Most secure", "Most risky", "Top picks 2-3 days"])
 
 with tab_day:
@@ -161,7 +152,7 @@ with tab_day:
                     f"<span style='color:#8b93a7'>{r['away_bg']}</span>",
                     unsafe_allow_html=True,
                 )
-                st.caption(f"{r['tournament']} • {r['match_date']}")
+                st.caption(f"{r['tournament']} • {r['match_date'].strftime('%d.%m.%Y')}")
                 a, b, c = st.columns(3)
                 a.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
                 b.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], True)}", unsafe_allow_html=True)
@@ -210,7 +201,7 @@ with tab_risky:
                 st.write(market_reason(r))
 
 with tab_top:
-    future_df = df[(df["match_date"] >= selected_date) & (df["match_date"] <= selected_date + timedelta(days=2))].copy()
+    future_df = df[(df["match_date"].dt.date >= selected_date) & (df["match_date"].dt.date <= (selected_date + timedelta(days=2)))].copy()
     if future_df.empty:
         st.info("Няма налични мачове за следващите 2-3 дни.")
     else:
@@ -221,7 +212,7 @@ with tab_top:
                 st.markdown("<div style='display:inline-block;background:#1f6feb;color:white;padding:0.35rem 0.65rem;border-radius:0.6rem;font-weight:700'>TOP PICK</div>", unsafe_allow_html=True)
                 st.markdown(f"**{r['home']}** / **{r['away']}**")
                 st.markdown(f"<span style='color:#8b93a7'>{r['home_bg']} vs {r['away_bg']}</span>", unsafe_allow_html=True)
-                st.caption(f"{r['league']} • {r['match_date']} • {r['tournament']}")
+                st.caption(f"{r['league']} • {r['match_date'].strftime('%d.%m.%Y')} • {r['tournament']}")
                 a, b, c = st.columns(3)
                 a.markdown(f"**Pick**  \n{outcome_label(r['predicted_outcome'])}")
                 b.markdown(f"**Confidence**  \n{color_percent(r['confidence_score'], True)}", unsafe_allow_html=True)
