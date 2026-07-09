@@ -25,11 +25,11 @@ DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,pr
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv(StringIO(DATA_CSV))
-    df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce").dt.date
+    df = pd.read_csv(StringIO(DATA_CSV.strip()))
+    df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
     df = df.dropna(subset=["match_date"]).copy()
+    st.write("Debug - shape:", df.shape)
     return df
-
 def color_percent(value, positive=True):
     color = "#1a7f37" if (value >= 50 if positive else value <= 50) else "#d1242f"
     return f"<span style='color:{color}; font-weight:700'>{value:.1f}%</span>"
