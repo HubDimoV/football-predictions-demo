@@ -31,6 +31,12 @@ def load_data():
             data.append(parts)
     df = pd.DataFrame(data, columns=header)
     df["match_date"] = pd.to_datetime(df["match_date"], format="%Y-%m-%d")
+    df["confidence_score"] = pd.to_numeric(df["confidence_score"], errors="coerce")
+    df["risk_score"] = pd.to_numeric(df["risk_score"], errors="coerce")
+    df["raw_value_score"] = pd.to_numeric(df["raw_value_score"], errors="coerce")
+    df["form_score"] = pd.to_numeric(df["form_score"], errors="coerce")
+    df["news_score"] = pd.to_numeric(df["news_score"], errors="coerce")
+    df["bookie_gap"] = pd.to_numeric(df["bookie_gap"], errors="coerce")
     return df
 
 df = load_data()
@@ -98,8 +104,9 @@ if selected_league != "All":
     filtered = filtered[filtered["league"] == selected_league]
 
 def color_percent(value, positive=True):
-    color = "#1a7f37" if (value >= 50 if positive else value <= 50) else "#d1242f"
-    return f"<span style='color:{color}; font-weight:700'>{value:.1f}%</span>"
+    val = float(value)
+    color = "#1a7f37" if (val >= 50 if positive else val <= 50) else "#d1242f"
+    return f"<span style='color:{color}; font-weight:700'>{val:.1f}%</span>"
 
 def outcome_label(value):
     return {"1": "Home win", "X": "Draw", "2": "Away win"}.get(str(value), str(value))
