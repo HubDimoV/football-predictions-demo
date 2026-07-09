@@ -74,10 +74,19 @@ def top_pick_score(row):
         + row["news_score"] * 100 * 0.15
     )
 
-df = load_data()
-if df.empty:
-    st.error("Няма валидни данни в приложението.")
-    st.stop()
+@st.cache_data
+def load_data():
+    lines = DATA_CSV.strip().split("\n")
+    data = []
+    for line in lines[1:]:
+        parts = line.split(",", 20)
+        if len(parts) >= 21:
+            data.append(parts[:21])
+    df = pd.DataFrame(data, columns=lines[0].split(","))
+    df["match_date"] = pd.to_datetime(df["match_date"], format="%Y-%m-%d", errors="coerce")
+    df = df.dropna(subset=["match_date"]).copy()
+    st.write("Rows loaded:", len(df))
+    return df
 
 all_dates = sorted(df["match_date"].dropna().unique())
 if not all_dates:
