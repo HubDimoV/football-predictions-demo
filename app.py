@@ -70,6 +70,7 @@ def top_pick_score(row):
     )
 
 df = load_data()
+st.write("Rows:", len(df))
 if df.empty:
     st.error("Няма валидни данни в приложението.")
     st.stop()
