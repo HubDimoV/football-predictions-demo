@@ -6,30 +6,35 @@ from datetime import date, timedelta
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="centered")
 
 DATA_CSV = """match_id,match_date,league,tournament,home,away,home_bg,away_bg,predicted_outcome,confidence_score,risk_score,odds_1,odds_x,odds_2,news_note,summary_bg,market_flag,raw_value_score,form_score,news_score,bookie_gap
-1,2026-07-08,Champions League,Club,Real Madrid,Manchester City,Реал Мадрид,Манчестър Сити,1,81.2,18.8,1.72,3.65,4.60,City have key defensive doubts.,Реал Мадрид изглежда по-стабилен, а Сити имат колебания в защитата.,normal,0.74,0.82,0.65,0.12
+1,2026-07-08,Champions League,Club,Real Madrid,Manchester City,Реал Мадрид,Манчестър Сити,1,81.2,18.8,1.72,3.65,4.60,City have key defensive doubts.,Реал Мадрид изглежда по-стабилен а Сити имат колебания в защитата.,normal,0.74,0.82,0.65,0.12
 2,2026-07-08,Champions League,Club,Bayern Munich,Inter,Байерн Мюнхен,Интер,1,77.9,22.1,1.61,3.75,5.10,Inter rotation expected after a busy run.,Байерн има леко по-добър момент и по-ясен път към успех.,normal,0.69,0.79,0.61,0.10
 3,2026-07-08,European Championship,National,France,Portugal,Франция,Португалия,X,63.5,36.5,2.18,3.10,3.85,Very even matchup with strong midfield control.,Мачът е изравнен и X изглежда напълно реален вариант.,normal,0.58,0.63,0.67,0.06
-4,2026-07-08,World Cup,National,Argentina,Brazil,Аржентина,Бразилия,1,66.2,33.8,2.05,3.20,3.55,Argentina have slightly better recent stability.,Аржентина е по-стабилна в последните мачове, но рискът остава.,normal,0.61,0.69,0.62,0.08
+4,2026-07-08,World Cup,National,Argentina,Brazil,Аржентина,Бразилия,1,66.2,33.8,2.05,3.20,3.55,Argentina have slightly better recent stability.,Аржентина е по-стабилна в последните мачове но рискът остава.,normal,0.61,0.69,0.62,0.08
 5,2026-07-08,Bulgarian League,Club,Ludogorets,CSKA Sofia,Лудогорец,ЦСКА София,1,84.1,15.9,1.48,3.30,6.20,Home form is strong and odds are compressed.,Лудогорец има ясен домакински плюс и нисък риск.,value,0.81,0.84,0.74,0.14
-6,2026-07-08,Bulgarian League,Club,Levski Sofia,Botev Plovdiv,Левски София,Ботев Пловдив,1,71.4,28.6,1.85,3.15,4.05,Levski squad looks more balanced today.,Левски е по-стабилен, но не е без риск.,normal,0.66,0.72,0.66,0.07
+6,2026-07-08,Bulgarian League,Club,Levski Sofia,Botev Plovdiv,Левски София,Ботев Пловдив,1,71.4,28.6,1.85,3.15,4.05,Levski squad looks more balanced today.,Левски е по-стабилен но не е без риск.,normal,0.66,0.72,0.66,0.07
 7,2026-07-08,Primeira Liga,Club,Benfica,Porto,X,58.7,41.3,2.42,3.25,2.95,Derby context usually raises variance.,Дербито е непредвидимо и X е логичен сценарий.,normal,0.52,0.59,0.55,0.05
 8,2026-07-08,Eredivisie,Club,Feyenoord,Ajax,Фейенорд,Аякс,1,60.8,39.2,2.22,3.45,3.10,Form is mixed for both sides.,Формата е колеблива и това увеличава риска.,normal,0.55,0.61,0.53,0.06
-9,2026-07-09,Champions League,Club,Arsenal,PSG,Арсенал,ПСЖ,1,67.1,32.9,2.60,3.20,2.68,Strong tactical battle expected.,Арсенал има шанс, но мачът е труден за прогнозиране.,high_value,0.63,0.66,0.60,0.16
+9,2026-07-09,Champions League,Club,Arsenal,PSG,Арсенал,ПСЖ,1,67.1,32.9,2.60,3.20,2.68,Strong tactical battle expected.,Арсенал има шанс но мачът е труден за прогнозиране.,high_value,0.63,0.66,0.60,0.16
 10,2026-07-09,World Cup,National,England,Spain,X,57.9,42.1,2.80,3.05,2.62,Even odds and strong balance from bookmakers.,Мачът е балансиран и високият коефициент носи шанс.,high_value,0.59,0.57,0.58,0.18
 11,2026-07-09,European Championship,National,Germany,Italy,Германия,Италия,1,62.4,37.6,2.32,3.05,3.15,Recent form slightly favors Germany.,Германия е малко по-стабилна в момента.,normal,0.57,0.62,0.56,0.09
 12,2026-07-09,Bulgarian League,Club,Arda,Slavia Sofia,Арда,Славия София,1,74.2,25.8,1.92,3.10,3.75,Arda looks fitter with fewer absences.,Арда има добър баланс и по-нисък риск.,value,0.72,0.75,0.68,0.11
 13,2026-07-10,Champions League,Club,Barcelona,Dortmund,Барселона,Дортмунд,1,79.2,20.8,1.66,3.60,4.90,Barcelona create more pressure at home.,Барселона е по-опасен домакин и има добър импулс.,value,0.77,0.81,0.70,0.13
 14,2026-07-10,World Cup,National,Portugal,England,X,61.8,38.2,2.35,3.15,3.00,Both teams have balanced profiles and low gap.,Мачът е близък и равенството изглежда доста реално.,normal,0.60,0.64,0.59,0.08
-15,2026-07-10,European Championship,National,Spain,Germany,Испания,Германия,1,65.6,34.4,2.15,3.25,3.40,Spain control tempo well in current form.,Испания е леко по-силна в контрол на мача.,normal,0.62,0.67,0.61,0.07
-"""
+15,2026-07-10,European Championship,National,Spain,Germany,Испания,Германия,1,65.6,34.4,2.15,3.25,3.40,Spain control tempo well in current form.,Испания е леко по-силна в контрол на мача.,normal,0.62,0.67,0.61,0.07"""
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv(StringIO(DATA_CSV.strip()))
+    lines = DATA_CSV.strip().split("\n")
+    data = []
+    for line in lines[1:]:
+        parts = line.split(",", 20)
+        if len(parts) >= 21:
+            data.append(parts)
+    df = pd.DataFrame(data, columns=lines[0].split(","))
     df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
     df = df.dropna(subset=["match_date"]).copy()
-    st.write("Debug - shape:", df.shape)
     return df
+
 def color_percent(value, positive=True):
     color = "#1a7f37" if (value >= 50 if positive else value <= 50) else "#d1242f"
     return f"<span style='color:{color}; font-weight:700'>{value:.1f}%</span>"
@@ -70,7 +75,6 @@ def top_pick_score(row):
     )
 
 df = load_data()
-st.write("Rows:", len(df))
 if df.empty:
     st.error("Няма валидни данни в приложението.")
     st.stop()
