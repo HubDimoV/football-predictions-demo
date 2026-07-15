@@ -11,63 +11,61 @@ API_KEY = os.getenv("API_FOOTBALL_KEY", "")
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": API_KEY} if API_KEY else {}
 
-def fetch_matches_for_day(target_date):
-    params = {"date": target_date.strftime("%Y-%m-%d")}
-    url = f"{BASE_URL}/matches"
-    resp = requests.get(url, headers=HEADERS, params=params, timeout=20)
+def api_get(url, params=None):
+    try:
+        resp = requests.get(url, headers=HEADERS, params=params or {}, timeout=20)
+        return resp.status_code, resp.text, resp.json() if resp.status_code == 200 else None
+    except Exception as e:
+        return None, str(e), None
 
-    if resp.status_code != 200:
-        return [], f"API {resp.status_code}: {resp.text[:200]}"
+def parse_matches(payload, source_tag=""):
+    rows = []
+    if not payload or "matches" not in payload:
+        return rows
 
-    data = resp.json()
-    matches = []
-
-    for m in data.get("matches", []):
+    for m in payload.get("matches", []):
         utc_date = m.get("utcDate")
         if not utc_date:
             continue
 
-        match_dt = pd.to_datetime(utc_date, utc=True).tz_convert(None)
-
-        comp = m.get("competition", {})
-        home = m.get("homeTeam", {}).get("name", "Unknown")
-        away = m.get("awayTeam", {}).get("name", "Unknown")
-
-        home_code = m.get("homeTeam", {}).get("shortName") or home
-        away_code = m.get("awayTeam", {}).get("shortName") or away
-
-        home_score = m.get("score", {}).get("fullTime", {}).get("home")
-        away_score = m.get("score", {}).get("fullTime", {}).get("away")
+        comp = m.get("competition", {}) or {}
+        home_team = m.get("homeTeam", {}) or {}
+        away_team = m.get("awayTeam", {}) or {}
         status = m.get("status", "")
 
-        if status == "FINISHED" and home_score is not None and away_score is not None:
-            if home_score > away_score:
-                pick = "1"
-            elif home_score < away_score:
-                pick = "2"
-            else:
-                pick = "X"
-        else:
-            home_val = 0.40
-            draw_val = 0.30
-            away_val = 0.30
+        match_dt = pd.to_datetime(utc_date, utc=True).tz_convert(None)
 
-            if comp.get("code") in {"CL", "BL1", "PD", "PL", "SA", "FL1"}:
-                home_val += 0.05
-                away_val -= 0.02
-
-            pick = "1" if home_val >= max(draw_val, away_val) else ("X" if draw_val >= away_val else "2")
-
-        confidence = 62.0
-        risk = 38.0
-
-        if comp.get("code") in {"CL", "BL1", "PD", "PL", "SA", "FL1"}:
-            confidence += 6
-            risk -= 4
+        home = home_team.get("name", "Unknown")
+        away = away_team.get("name", "Unknown")
 
         if status == "FINISHED":
-            confidence = 95.0
-            risk = 5.0
+            hs = m.get("score", {}).get("fullTime", {}).get("home")
+            as_ = m.get("score", {}).get("fullTime", {}).get("away")
+            if hs is not None and as_ is not None:
+                if hs > as_:
+                    pick = "1"
+                elif hs < as_:
+                    pick = "2"
+                else:
+                    pick = "X"
+            else:
+                pick = "1"
+            confidence = 96.0
+            risk = 4.0
+        else:
+            code = comp.get("code", "")
+            if code in {"PL", "PD", "CL", "BL1", "SA", "FL1"}:
+                pick = "1"
+                confidence = 68.0
+                risk = 32.0
+            elif code in {"DED", "PPL", "EC", "BL", "WC", "EL"}:
+                pick = "X"
+                confidence = 61.0
+                risk = 39.0
+            else:
+                pick = "1"
+                confidence = 60.0
+                risk = 40.0
 
         odds_1 = 2.05
         odds_x = 3.15
@@ -76,62 +74,82 @@ def fetch_matches_for_day(target_date):
         if pick == "1":
             raw_value = 0.56
         elif pick == "X":
-            raw_value = 0.60
+            raw_value = 0.59
         else:
             raw_value = 0.54
 
-        form_score = 0.60
-        news_score = 0.50
-        bookie_gap = 0.08
-
-        matches.append({
+        rows.append({
             "match_id": m.get("id"),
             "match_date": match_dt,
             "league": comp.get("name", "Unknown"),
             "tournament": comp.get("type", "Competition"),
             "home": home,
             "away": away,
-            "home_bg": home_code,
-            "away_bg": away_code,
+            "home_bg": home_team.get("shortName") or home,
+            "away_bg": away_team.get("shortName") or away,
             "predicted_outcome": pick,
             "confidence_score": float(confidence),
             "risk_score": float(risk),
             "odds_1": odds_1,
             "odds_x": odds_x,
             "odds_2": odds_2,
-            "news_note": "Real match from football-data.org.",
+            "news_note": f"Loaded from API {source_tag}".strip(),
             "summary_bg": f"{home} срещу {away} е зареден от live API.",
             "market_flag": "normal",
             "raw_value_score": float(raw_value),
-            "form_score": float(form_score),
-            "news_score": float(news_score),
-            "bookie_gap": float(bookie_gap),
+            "form_score": 0.60,
+            "news_score": 0.50,
+            "bookie_gap": 0.08,
             "status": status,
+            "source": source_tag,
         })
 
-    return matches, None
+    return rows
+
+def fetch_by_date_shortcut(shortcut):
+    url = f"{BASE_URL}/matches"
+    status_code, text, payload = api_get(url, params={"date": shortcut})
+    return status_code, text, payload
+
+def fetch_scheduled():
+    url = f"{BASE_URL}/matches"
+    status_code, text, payload = api_get(url, params={"status": "SCHEDULED"})
+    return status_code, text, payload
 
 @st.cache_data(ttl=900)
 def load_matches():
     all_rows = []
-    errors = []
+    debug_lines = []
+    shortcuts = ["TODAY", "TOMORROW"]
 
-    today = date.today()
-    for offset in range(3):
-        d = today + timedelta(days=offset)
-        rows, err = fetch_matches_for_day(d)
-        if err:
-            errors.append(f"{d.strftime('%Y-%m-%d')}: {err}")
-        all_rows.extend(rows)
+    for sc in shortcuts:
+        code, text, payload = fetch_by_date_shortcut(sc)
+        if code == 200 and payload:
+            parsed = parse_matches(payload, source_tag=f"date={sc}")
+            all_rows.extend(parsed)
+            debug_lines.append(f"{sc}: {len(parsed)} matches")
+        else:
+            debug_lines.append(f"{sc}: {code} {text[:140]}")
+
+    code, text, payload = fetch_scheduled()
+    if code == 200 and payload:
+        parsed = parse_matches(payload, source_tag="status=SCHEDULED")
+        all_rows.extend(parsed)
+        debug_lines.append(f"SCHEDULED: {len(parsed)} matches")
+    else:
+        debug_lines.append(f"SCHEDULED: {code} {text[:140]}")
 
     df = pd.DataFrame(all_rows)
     if not df.empty:
         df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-        for col in ["confidence_score", "risk_score", "odds_1", "odds_x", "odds_2", "raw_value_score", "form_score", "news_score", "bookie_gap"]:
+        num_cols = ["confidence_score", "risk_score", "odds_1", "odds_x", "odds_2", "raw_value_score", "form_score", "news_score", "bookie_gap"]
+        for col in num_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["match_date"]).copy()
+        df = df.sort_values("match_date").drop_duplicates(subset=["match_id"]).copy()
 
-    return df, errors
+    return df, debug_lines
 
 def color_percent(value, positive=True):
     val = float(value)
@@ -173,26 +191,19 @@ def top_pick_score(row):
         + row["news_score"] * 100 * 0.15
     )
 
-df, load_errors = load_matches()
+df, debug_lines = load_matches()
 
 st.title("Football Predictions")
 
-if load_errors:
-    with st.expander("API warnings"):
-        for e in load_errors:
-            st.write(e)
+with st.expander("API debug"):
+    for line in debug_lines:
+        st.write(line)
 
 if df.empty:
-    st.warning("Няма налични мачове за днес и следващите 2 дни.")
+    st.warning("Няма налични мачове за днес, утре или SCHEDULED в момента.")
     st.stop()
-
-df = df.sort_values("match_date").copy()
 
 all_dates = sorted(df["match_date"].dt.date.unique().tolist())
-if not all_dates:
-    st.warning("Няма налични дати.")
-    st.stop()
-
 selected_date = st.date_input(
     "Date",
     value=all_dates[0],
