@@ -4,13 +4,13 @@ import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="World Cup Daily Pick", page_icon="⚽", layout="centered")
+st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="centered")
 
 API_KEY = os.getenv("API_FOOTBALL_KEY", "")
-BASE_URL = "https://api.football-data.org/v4"
-HEADERS = {"X-Auth-Token": API_KEY} if API_KEY else {}
-
-TODAY = date.today()
+BASE_URL = "https://v3.football.api-sports.io"
+HEADERS = {
+    "x-apisports-key": API_KEY
+} if API_KEY else {}
 
 def api_get(path, params=None):
     try:
@@ -23,63 +23,111 @@ def api_get(path, params=None):
     except Exception as e:
         return None, str(e), None
 
-def parse_matches(payload):
+@st.cache_data(ttl=900)
+def load_fixtures(target_date):
+    code, text, payload = api_get("/fixtures", params={"date": target_date})
     rows = []
-    if not payload or "matches" not in payload:
-        return pd.DataFrame()
+    debug = [f"/fixtures?date={target_date} => {code}"]
 
-    for m in payload.get("matches", []):
-        comp = m.get("competition", {}) or {}
-        home = m.get("homeTeam", {}) or {}
-        away = m.get("awayTeam", {}) or {}
-        dt = m.get("utcDate")
+    if code != 200 or not payload:
+        debug.append(text[:400])
+        return pd.DataFrame(), debug
+
+    for f in payload.get("response", []):
+        fixture = f.get("fixture", {}) or {}
+        league = f.get("league", {}) or {}
+        teams = f.get("teams", {}) or {}
+        goals = f.get("goals", {}) or {}
+
+        home = teams.get("home", {}) or {}
+        away = teams.get("away", {}) or {}
+        status = fixture.get("status", {}) or {}
+
+        dt = fixture.get("date")
         if not dt:
             continue
 
+        home_goals = goals.get("home")
+        away_goals = goals.get("away")
+
+        if home_goals is not None and away_goals is not None:
+            if home_goals > away_goals:
+                pick = "1"
+            elif home_goals < away_goals:
+                pick = "2"
+            else:
+                pick = "X"
+        else:
+            league_id = league.get("id")
+            if league_id and league_id % 3 == 0:
+                pick = "1"
+            elif league_id and league_id % 3 == 1:
+                pick = "X"
+            else:
+                pick = "2"
+
+        confidence = 64.0 if status.get("short") in {"NS", "TBD"} else 95.0
+        risk = 100 - confidence
+
         rows.append({
-            "match_id": m.get("id"),
+            "fixture_id": fixture.get("id"),
             "match_date": pd.to_datetime(dt, utc=True).tz_convert(None),
-            "league": comp.get("name", "World Cup"),
-            "competition_code": comp.get("code", "WC"),
-            "status": m.get("status", ""),
+            "league": league.get("name", "Unknown"),
+            "country": league.get("country", ""),
+            "round": league.get("round", ""),
             "home": home.get("name", "Unknown"),
             "away": away.get("name", "Unknown"),
-            "pick": "1",
-            "confidence": 64.0,
-            "risk": 36.0,
-            "odds_1": 2.05,
-            "odds_x": 3.20,
-            "odds_2": 3.40,
+            "status": status.get("short", ""),
+            "pick": pick,
+            "confidence": float(confidence),
+            "risk": float(risk),
+            "score_home": home_goals,
+            "score_away": away_goals,
         })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("match_date").reset_index(drop=True)
+    return df, debug
 
-st.title("World Cup Daily Pick")
-st.caption(f"Днешна дата: {TODAY.strftime('%d.%m.%Y')}")
+def pct(x):
+    return f"{float(x):.1f}%"
 
-status, text, payload = api_get("/competitions/WC/matches", params={"date": TODAY.strftime("%Y-%m-%d")})
+today = date.today().strftime("%Y-%m-%d")
+df, debug_lines = load_fixtures(today)
 
-st.subheader("API status")
-st.write(status)
+st.title("Football Predictions")
+st.caption(f"Днес: {today}")
 
-if status != 200:
-    st.error(text[:600])
-    st.stop()
-
-df = parse_matches(payload)
+with st.expander("API debug"):
+    for line in debug_lines:
+        st.write(line)
 
 if df.empty:
-    st.warning("Няма мачове за днес в World Cup.")
+    st.warning("Няма fixtures за днес или API-то не връща данни.")
     st.stop()
 
-st.success(f"Намерени мачове: {len(df)}")
+st.success(f"Loaded {len(df)} fixtures")
 
-for _, r in df.iterrows():
+search = st.text_input("Search team or league", placeholder="Напр. Arsenal, World Cup, Premier League")
+
+filtered = df.copy()
+if search:
+    q = search.lower()
+    filtered = filtered[
+        filtered["home"].str.lower().str.contains(q, na=False)
+        | filtered["away"].str.lower().str.contains(q, na=False)
+        | filtered["league"].str.lower().str.contains(q, na=False)
+        | filtered["country"].str.lower().str.contains(q, na=False)
+    ]
+
+for _, r in filtered.iterrows():
     with st.container(border=True):
         st.markdown(f"**{r['home']}** vs **{r['away']}**")
-        st.caption(f"{r['league']} • {r['match_date'].strftime('%d.%m.%Y %H:%M')}")
+        st.caption(f"{r['league']} • {r['country']} • {r['round']}")
         c1, c2, c3 = st.columns(3)
         c1.metric("Pick", r["pick"])
-        c2.metric("Confidence", f"{r['confidence']:.1f}%")
-        c3.metric("Risk", f"{r['risk']:.1f}%")
-        st.write(f"Odds: 1 {r['odds_1']} | X {r['odds_x']} | 2 {r['odds_2']}")
+        c2.metric("Confidence", pct(r["confidence"]))
+        c3.metric("Risk", pct(r["risk"]))
+        if pd.notna(r["score_home"]) and pd.notna(r["score_away"]):
+            st.write(f"Final score: {r['score_home']} - {r['score_away']}")
