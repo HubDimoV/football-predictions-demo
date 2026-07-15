@@ -11,9 +11,27 @@ API_KEY = os.getenv("API_FOOTBALL_KEY", "")
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": API_KEY} if API_KEY else {}
 
-def api_get(url, params=None):
+COMPETITIONS = [
+    {"id": "PL", "name": "Premier League"},
+    {"id": "PD", "name": "La Liga"},
+    {"id": "CL", "name": "Champions League"},
+    {"id": "BL1", "name": "Bundesliga"},
+    {"id": "SA", "name": "Serie A"},
+    {"id": "FL1", "name": "Ligue 1"},
+]
+
+TEAM_IDS = [
+    {"id": 86, "name": "Real Madrid"},
+    {"id": 65, "name": "Manchester City"},
+    {"id": 64, "name": "Liverpool"},
+    {"id": 61, "name": "Chelsea"},
+    {"id": 78, "name": "Barcelona"},
+    {"id": 5, "name": "Bayern Munich"},
+]
+
+def api_get(path, params=None):
     try:
-        resp = requests.get(url, headers=HEADERS, params=params or {}, timeout=20)
+        resp = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params or {}, timeout=20)
         return resp.status_code, resp.text, resp.json() if resp.status_code == 200 else None
     except Exception as e:
         return None, str(e), None
@@ -34,7 +52,6 @@ def parse_matches(payload, source_tag=""):
         status = m.get("status", "")
 
         match_dt = pd.to_datetime(utc_date, utc=True).tz_convert(None)
-
         home = home_team.get("name", "Unknown")
         away = away_team.get("name", "Unknown")
 
@@ -42,12 +59,7 @@ def parse_matches(payload, source_tag=""):
             hs = m.get("score", {}).get("fullTime", {}).get("home")
             as_ = m.get("score", {}).get("fullTime", {}).get("away")
             if hs is not None and as_ is not None:
-                if hs > as_:
-                    pick = "1"
-                elif hs < as_:
-                    pick = "2"
-                else:
-                    pick = "X"
+                pick = "1" if hs > as_ else "2" if hs < as_ else "X"
             else:
                 pick = "1"
             confidence = 96.0
@@ -56,27 +68,12 @@ def parse_matches(payload, source_tag=""):
             code = comp.get("code", "")
             if code in {"PL", "PD", "CL", "BL1", "SA", "FL1"}:
                 pick = "1"
-                confidence = 68.0
-                risk = 32.0
-            elif code in {"DED", "PPL", "EC", "BL", "WC", "EL"}:
-                pick = "X"
-                confidence = 61.0
-                risk = 39.0
+                confidence = 67.0
+                risk = 33.0
             else:
-                pick = "1"
+                pick = "X"
                 confidence = 60.0
                 risk = 40.0
-
-        odds_1 = 2.05
-        odds_x = 3.15
-        odds_2 = 3.10
-
-        if pick == "1":
-            raw_value = 0.56
-        elif pick == "X":
-            raw_value = 0.59
-        else:
-            raw_value = 0.54
 
         rows.append({
             "match_id": m.get("id"),
@@ -90,13 +87,13 @@ def parse_matches(payload, source_tag=""):
             "predicted_outcome": pick,
             "confidence_score": float(confidence),
             "risk_score": float(risk),
-            "odds_1": odds_1,
-            "odds_x": odds_x,
-            "odds_2": odds_2,
-            "news_note": f"Loaded from API {source_tag}".strip(),
+            "odds_1": 2.05,
+            "odds_x": 3.15,
+            "odds_2": 3.10,
+            "news_note": f"Loaded from {source_tag}",
             "summary_bg": f"{home} срещу {away} е зареден от live API.",
             "market_flag": "normal",
-            "raw_value_score": float(raw_value),
+            "raw_value_score": 0.56 if pick == "1" else 0.59,
             "form_score": 0.60,
             "news_score": 0.50,
             "bookie_gap": 0.08,
@@ -106,38 +103,45 @@ def parse_matches(payload, source_tag=""):
 
     return rows
 
-def fetch_by_date_shortcut(shortcut):
-    url = f"{BASE_URL}/matches"
-    status_code, text, payload = api_get(url, params={"date": shortcut})
-    return status_code, text, payload
+def fetch_competition_matches(comp_id):
+    params = {
+        "status": "SCHEDULED",
+        "dateFrom": date.today().strftime("%Y-%m-%d"),
+        "dateTo": (date.today() + timedelta(days=14)).strftime("%Y-%m-%d"),
+    }
+    return api_get(f"/competitions/{comp_id}/matches", params=params)
 
-def fetch_scheduled():
-    url = f"{BASE_URL}/matches"
-    status_code, text, payload = api_get(url, params={"status": "SCHEDULED"})
-    return status_code, text, payload
+def fetch_team_matches(team_id):
+    params = {
+        "status": "SCHEDULED",
+        "dateFrom": date.today().strftime("%Y-%m-%d"),
+        "dateTo": (date.today() + timedelta(days=14)).strftime("%Y-%m-%d"),
+    }
+    return api_get(f"/teams/{team_id}/matches", params=params)
 
 @st.cache_data(ttl=900)
 def load_matches():
     all_rows = []
     debug_lines = []
-    shortcuts = ["TODAY", "TOMORROW"]
 
-    for sc in shortcuts:
-        code, text, payload = fetch_by_date_shortcut(sc)
+    for comp in COMPETITIONS:
+        code, text, payload = fetch_competition_matches(comp["id"])
         if code == 200 and payload:
-            parsed = parse_matches(payload, source_tag=f"date={sc}")
-            all_rows.extend(parsed)
-            debug_lines.append(f"{sc}: {len(parsed)} matches")
+            rows = parse_matches(payload, source_tag=f"competition={comp['id']}")
+            all_rows.extend(rows)
+            debug_lines.append(f"competition {comp['id']}: {len(rows)} matches")
         else:
-            debug_lines.append(f"{sc}: {code} {text[:140]}")
+            debug_lines.append(f"competition {comp['id']}: {code} {text[:120]}")
 
-    code, text, payload = fetch_scheduled()
-    if code == 200 and payload:
-        parsed = parse_matches(payload, source_tag="status=SCHEDULED")
-        all_rows.extend(parsed)
-        debug_lines.append(f"SCHEDULED: {len(parsed)} matches")
-    else:
-        debug_lines.append(f"SCHEDULED: {code} {text[:140]}")
+    if not all_rows:
+        for team in TEAM_IDS:
+            code, text, payload = fetch_team_matches(team["id"])
+            if code == 200 and payload:
+                rows = parse_matches(payload, source_tag=f"team={team['id']}")
+                all_rows.extend(rows)
+                debug_lines.append(f"team {team['id']}: {len(rows)} matches")
+            else:
+                debug_lines.append(f"team {team['id']}: {code} {text[:120]}")
 
     df = pd.DataFrame(all_rows)
     if not df.empty:
@@ -160,11 +164,7 @@ def outcome_label(value):
     return {"1": "Home win", "X": "Draw", "2": "Away win"}.get(str(value), str(value))
 
 def market_reason(row):
-    if row["market_flag"] == "value":
-        return "Има добър value за кратък прозорец."
-    if row["market_flag"] == "high_value":
-        return "Коефициентът е по-висок от обичайното и носи потенциал."
-    return "Коефициентите са в нормален диапазон."
+    return "Коефициентите и формата изглеждат балансирани." if row["market_flag"] == "normal" else "Има value сигнал."
 
 def secure_score(row):
     return (
@@ -200,7 +200,7 @@ with st.expander("API debug"):
         st.write(line)
 
 if df.empty:
-    st.warning("Няма налични мачове за днес, утре или SCHEDULED в момента.")
+    st.warning("Няма налични мачове в търсените competitions/teams за следващите 2 седмици.")
     st.stop()
 
 all_dates = sorted(df["match_date"].dt.date.unique().tolist())
