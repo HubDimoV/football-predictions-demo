@@ -1,5 +1,6 @@
 import os
-from datetime import date
+from datetime import date, timedelta
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -8,9 +9,16 @@ st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="c
 
 API_KEY = os.getenv("API_FOOTBALL_KEY", "")
 BASE_URL = "https://v3.football.api-sports.io"
-HEADERS = {
-    "x-apisports-key": API_KEY
-} if API_KEY else {}
+HEADERS = {"x-apisports-key": API_KEY} if API_KEY else {}
+
+PREFERRED_LEAGUES = [
+    {"name": "Premier League", "competition_id": 39},
+    {"name": "La Liga", "competition_id": 140},
+    {"name": "Bundesliga", "competition_id": 78},
+    {"name": "Serie A", "competition_id": 135},
+    {"name": "Ligue 1", "competition_id": 61},
+    {"name": "Champions League", "competition_id": 2},
+]
 
 def api_get(path, params=None):
     try:
@@ -23,15 +31,10 @@ def api_get(path, params=None):
     except Exception as e:
         return None, str(e), None
 
-@st.cache_data(ttl=900)
-def load_fixtures(target_date):
-    code, text, payload = api_get("/fixtures", params={"date": target_date})
+def parse_fixtures(payload, source_tag=""):
     rows = []
-    debug = [f"/fixtures?date={target_date} => {code}"]
-
-    if code != 200 or not payload:
-        debug.append(text[:400])
-        return pd.DataFrame(), debug
+    if not payload or "response" not in payload:
+        return pd.DataFrame()
 
     for f in payload.get("response", []):
         fixture = f.get("fixture", {}) or {}
@@ -42,32 +45,28 @@ def load_fixtures(target_date):
         home = teams.get("home", {}) or {}
         away = teams.get("away", {}) or {}
         status = fixture.get("status", {}) or {}
-
         dt = fixture.get("date")
+
         if not dt:
             continue
 
-        home_goals = goals.get("home")
-        away_goals = goals.get("away")
+        hg = goals.get("home")
+        ag = goals.get("away")
 
-        if home_goals is not None and away_goals is not None:
-            if home_goals > away_goals:
+        if hg is not None and ag is not None:
+            if hg > ag:
                 pick = "1"
-            elif home_goals < away_goals:
+            elif hg < ag:
                 pick = "2"
             else:
                 pick = "X"
+            confidence = 95.0
+            risk = 5.0
         else:
-            league_id = league.get("id")
-            if league_id and league_id % 3 == 0:
-                pick = "1"
-            elif league_id and league_id % 3 == 1:
-                pick = "X"
-            else:
-                pick = "2"
-
-        confidence = 64.0 if status.get("short") in {"NS", "TBD"} else 95.0
-        risk = 100 - confidence
+            league_id = league.get("id") or 0
+            pick = "1" if league_id % 3 == 0 else ("X" if league_id % 3 == 1 else "2")
+            confidence = 64.0
+            risk = 36.0
 
         rows.append({
             "fixture_id": fixture.get("id"),
@@ -81,23 +80,46 @@ def load_fixtures(target_date):
             "pick": pick,
             "confidence": float(confidence),
             "risk": float(risk),
-            "score_home": home_goals,
-            "score_away": away_goals,
+            "score_home": hg,
+            "score_away": ag,
+            "source": source_tag,
         })
 
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values("match_date").reset_index(drop=True)
+    return df
+
+@st.cache_data(ttl=900)
+def load_today_fixtures():
+    today_str = date.today().strftime("%Y-%m-%d")
+    debug = []
+
+    code, text, payload = api_get("/fixtures", params={"date": today_str})
+    debug.append(f"/fixtures?date={today_str} => {code}")
+
+    df = parse_fixtures(payload, source_tag="date=today") if code == 200 else pd.DataFrame()
+    if code != 200:
+        debug.append(text[:400])
+
+    if df.empty:
+        for league in PREFERRED_LEAGUES[:3]:
+            code2, text2, payload2 = api_get("/fixtures", params={"league": league["competition_id"], "next": 10})
+            debug.append(f"/fixtures?league={league['competition_id']}&next=10 => {code2}")
+            if code2 == 200 and payload2:
+                df2 = parse_fixtures(payload2, source_tag=f"league={league['competition_id']}")
+                if not df2.empty:
+                    df = df2
+                    break
+            else:
+                debug.append(text2[:250])
+
     return df, debug
 
-def pct(x):
-    return f"{float(x):.1f}%"
-
-today = date.today().strftime("%Y-%m-%d")
-df, debug_lines = load_fixtures(today)
-
 st.title("Football Predictions")
-st.caption(f"Днес: {today}")
+st.caption(f"Днес: {date.today().strftime('%Y-%m-%d')}")
+
+df, debug_lines = load_today_fixtures()
 
 with st.expander("API debug"):
     for line in debug_lines:
@@ -109,7 +131,7 @@ if df.empty:
 
 st.success(f"Loaded {len(df)} fixtures")
 
-search = st.text_input("Search team or league", placeholder="Напр. Arsenal, World Cup, Premier League")
+search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Premier League")
 
 filtered = df.copy()
 if search:
@@ -127,7 +149,7 @@ for _, r in filtered.iterrows():
         st.caption(f"{r['league']} • {r['country']} • {r['round']}")
         c1, c2, c3 = st.columns(3)
         c1.metric("Pick", r["pick"])
-        c2.metric("Confidence", pct(r["confidence"]))
-        c3.metric("Risk", pct(r["risk"]))
+        c2.metric("Confidence", f"{r['confidence']:.1f}%")
+        c3.metric("Risk", f"{r['risk']:.1f}%")
         if pd.notna(r["score_home"]) and pd.notna(r["score_away"]):
             st.write(f"Final score: {r['score_home']} - {r['score_away']}")
