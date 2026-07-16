@@ -9,8 +9,8 @@ st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="w
 
 BASE_URL = "https://v3.football.api-sports.io"
 LOOKAHEAD_DAYS = 10
-NEXT_PER_LEAGUE = 10
 TOP_MATCHES_PER_DAY = 10
+MAX_LEAGUES_TO_TRY = 25
 
 IMPORTANT_LEAGUES = {
     39: 96,
@@ -23,8 +23,6 @@ IMPORTANT_LEAGUES = {
     88: 90,
     94: 89,
 }
-
-FALLBACK_LEAGUES = list(IMPORTANT_LEAGUES.keys())
 
 COLORS = {
     "header": "#1f6feb",
@@ -103,13 +101,13 @@ def parse_fixtures(payload):
             "has_stats": False,
             "has_injuries": False,
             "has_predictions": False,
-            "confidence": 35.0,
+            "confidence": 30.0,
             "confidence_parts": "",
             "league_rank": league_rank(lid),
         })
     return pd.DataFrame(rows)
 
-def get_active_seasons():
+def get_leagues_source():
     debug = []
     rows = []
     code, _, payload = api_get("/leagues")
@@ -126,50 +124,55 @@ def get_active_seasons():
                         "league": league.get("name", "Unknown"),
                         "country": country.get("name", ""),
                         "season": s.get("year"),
+                        "rank": league_rank(league.get("id")),
                     })
-    return pd.DataFrame(rows), debug
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["rank", "league_id"], ascending=[False, True]).head(MAX_LEAGUES_TO_TRY).reset_index(drop=True)
+    return df, debug
 
-def fetch_fixtures_for_league(league_id, season, debug):
-    all_rows = []
-    code, _, payload = api_get("/fixtures", params={"league": int(league_id), "season": int(season), "next": NEXT_PER_LEAGUE, "timezone": "Europe/Sofia"})
-    debug.append(f"/fixtures?league={int(league_id)}&season={int(season)}&next={NEXT_PER_LEAGUE} => {code}")
-    if code == 200 and payload and payload.get("response"):
-        df = parse_fixtures(payload)
-        if not df.empty:
-            all_rows.append(df)
-    return all_rows
-
-def load_fixtures():
+def load_fixtures_from_leagues(leagues_df):
     debug = []
     all_rows = []
-    active_df, league_debug = get_active_seasons()
-    debug.extend(league_debug)
+    if leagues_df.empty:
+        return pd.DataFrame(), debug
 
-    if not active_df.empty:
-        for _, lg in active_df.iterrows():
-            if int(lg["league_id"]) in FALLBACK_LEAGUES:
-                rows = fetch_fixtures_for_league(lg["league_id"], lg["season"], debug)
-                all_rows.extend(rows)
-
-    if not all_rows:
-        start = date.today()
-        end = start + timedelta(days=LOOKAHEAD_DAYS)
-        code, _, payload = api_get("/fixtures", params={"from": start.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"})
-        debug.append(f"/fixtures?from={start}&to={end} => {code}")
+    for _, lg in leagues_df.iterrows():
+        code, _, payload = api_get("/fixtures", params={
+            "league": int(lg["league_id"]),
+            "season": int(lg["season"]),
+            "next": LOOKAHEAD_DAYS,
+            "timezone": "Europe/Sofia",
+        })
+        debug.append(f"/fixtures?league={int(lg['league_id'])}&season={int(lg['season'])}&next={LOOKAHEAD_DAYS} => {code}")
         if code == 200 and payload and payload.get("response"):
             df = parse_fixtures(payload)
             if not df.empty:
                 all_rows.append(df)
 
-    if not all_rows:
-        for d in range(LOOKAHEAD_DAYS + 1):
-            day = (date.today() + timedelta(days=d)).strftime("%Y-%m-%d")
-            code, _, payload = api_get("/fixtures", params={"date": day, "timezone": "Europe/Sofia"})
-            debug.append(f"/fixtures?date={day} => {code}")
-            if code == 200 and payload and payload.get("response"):
-                df = parse_fixtures(payload)
-                if not df.empty:
-                    all_rows.append(df)
+    if all_rows:
+        out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
+        out = out.sort_values(["date", "league_rank", "match_date"], ascending=[True, False, True]).reset_index(drop=True)
+        return out, debug
+
+    return pd.DataFrame(), debug
+
+def load_fixtures_fallback():
+    debug = []
+    all_rows = []
+    start = date.today()
+    end = start + timedelta(days=LOOKAHEAD_DAYS)
+
+    for params in [
+        {"from": start.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
+        {"date": start.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
+    ]:
+        code, _, payload = api_get("/fixtures", params=params)
+        debug.append(f"/fixtures?{params} => {code}")
+        if code == 200 and payload and payload.get("response"):
+            df = parse_fixtures(payload)
+            if not df.empty:
+                all_rows.append(df)
 
     if all_rows:
         out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
@@ -179,7 +182,7 @@ def load_fixtures():
     return pd.DataFrame(), debug
 
 def score_confidence(row):
-    score = 30.0
+    score = 25.0
     parts = []
     if row.get("has_odds"):
         score += 25
@@ -207,17 +210,23 @@ def enrich_signals(df):
     df = df.copy()
     for idx in df.index:
         fid = df.at[idx, "fixture_id"]
+
         code, _, payload = api_get("/odds", params={"fixture": fid})
         df.at[idx, "has_odds"] = bool(code == 200 and payload and payload.get("response"))
+
         code, _, payload = api_get("/injuries", params={"fixture": fid})
         df.at[idx, "has_injuries"] = bool(code == 200 and payload and payload.get("response"))
+
         code, _, payload = api_get("/predictions", params={"fixture": fid})
         df.at[idx, "has_predictions"] = bool(code == 200 and payload and payload.get("response"))
+
         code, _, payload = api_get("/fixtures/statistics", params={"fixture": fid})
         df.at[idx, "has_stats"] = bool(code == 200 and payload and payload.get("response"))
+
         conf, parts = score_confidence(df.loc[idx].to_dict())
         df.at[idx, "confidence"] = conf
         df.at[idx, "confidence_parts"] = parts
+
     return df
 
 def build_pick(row):
@@ -236,12 +245,11 @@ def build_pick(row):
 
 def build_summary(row):
     p = build_pick(row)
+    base = "балансиран"
     if p == "1":
         base = "домакините изглеждат по-силни"
     elif p == "2":
         base = "гостите изглеждат по-силни"
-    else:
-        base = "мачът е балансиран"
     return f"Прогнозата е {p}, защото {base}."
 
 def build_flags(row):
@@ -263,19 +271,26 @@ if not API_KEY:
     st.error("Липсва API_FOOTBALL_KEY secret.")
     st.stop()
 
-df, debug = load_fixtures()
-df = enrich_signals(df)
+leagues_df, leagues_debug = get_leagues_source()
+fixtures_df, fixtures_debug = load_fixtures_from_leagues(leagues_df)
+debug = leagues_debug + fixtures_debug
+
+if fixtures_df.empty:
+    fixtures_df, fb_debug = load_fixtures_fallback()
+    debug.extend(fb_debug)
+
+fixtures_df = enrich_signals(fixtures_df)
 
 with st.expander("API debug"):
     for line in debug:
         st.write(line)
 
-if df.empty:
+if fixtures_df.empty:
     st.warning("Няма fixtures за показване.")
     st.stop()
 
 search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Champions League")
-filtered = df.copy()
+filtered = fixtures_df.copy()
 if search:
     q = search.lower()
     filtered = filtered[
