@@ -1,6 +1,5 @@
 import os
 from datetime import date, timedelta
-
 import pandas as pd
 import requests
 import streamlit as st
@@ -22,19 +21,19 @@ API_KEY = get_api_key()
 HEADERS = {"x-apisports-key": API_KEY} if API_KEY else {}
 
 IMPORTANT_LEAGUES = {
-    39: 100,   # Premier League
-    140: 98,   # La Liga
-    78: 96,    # Bundesliga
-    135: 95,   # Serie A
-    61: 94,    # Ligue 1
-    2: 93,     # Champions League
-    3: 92,     # Europa League
-    88: 91,    # Eredivisie
-    94: 90,    # Primeira Liga
-    203: 89,   # MLS / adjust if not in feed
+    2: 100,    # Champions League
+    3: 97,     # Europa League
+    39: 96,    # Premier League
+    140: 95,   # La Liga
+    78: 94,    # Bundesliga
+    135: 93,   # Serie A
+    61: 92,    # Ligue 1
+    88: 90,    # Eredivisie
+    94: 89,    # Primeira Liga
+    207: 88,   # World Cup / adjust if your feed uses another id
 }
 
-COLOR_PALETTE = {
+COLORS = {
     "header": "#1f6feb",
     "date": "#8b5cf6",
     "league": "#0ea5e9",
@@ -55,6 +54,18 @@ def api_get(path, params=None):
         return r.status_code, r.text, payload
     except Exception as e:
         return None, str(e), None
+
+def league_rank(league_id):
+    return IMPORTANT_LEAGUES.get(int(league_id), 50)
+
+def badge(rank):
+    if rank >= 95:
+        return "🔥"
+    if rank >= 90:
+        return "⭐"
+    if rank >= 80:
+        return "✅"
+    return "•"
 
 def parse_fixtures(payload):
     rows = []
@@ -103,24 +114,19 @@ def parse_fixtures(payload):
     return df
 
 @st.cache_data(ttl=300)
-def load_fixtures_for_day(target_date: str):
-    code, text, payload = api_get("/fixtures", params={"date": target_date})
-    debug = [f"/fixtures?date={target_date} => {code}"]
-    if code != 200 or not payload:
-        debug.append(text[:300])
-        return pd.DataFrame(), debug
-    return parse_fixtures(payload), debug
-
-@st.cache_data(ttl=300)
-def load_window(start_date: str, days: int = 10):
+def load_fixtures_window(start_date: str, days: int = 10):
     all_rows = []
     debug = []
     start = pd.to_datetime(start_date).date()
 
     for i in range(days + 1):
         d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
-        df, dbg = load_fixtures_for_day(d)
-        debug.extend(dbg)
+        code, text, payload = api_get("/fixtures", params={"date": d})
+        debug.append(f"/fixtures?date={d} => {code}")
+        if code != 200 or not payload:
+            debug.append(text[:250])
+            continue
+        df = parse_fixtures(payload)
         if not df.empty:
             all_rows.append(df)
 
@@ -128,19 +134,42 @@ def load_window(start_date: str, days: int = 10):
         out = pd.concat(all_rows, ignore_index=True)
         out = out.drop_duplicates(subset=["fixture_id"]).sort_values(["match_date", "league_id"]).reset_index(drop=True)
         return out, debug
+
     return pd.DataFrame(), debug
 
-def league_rank(league_id):
-    return IMPORTANT_LEAGUES.get(int(league_id), 50)
+def odds_by_fixture(fixture_id):
+    code, text, payload = api_get("/odds", params={"fixture": fixture_id})
+    if code != 200 or not payload:
+        return None
+    return payload
 
-def importance_badge(rank):
-    if rank >= 95:
-        return "🔥"
-    if rank >= 90:
-        return "⭐"
-    if rank >= 80:
-        return "✅"
-    return "•"
+def extract_best_odds(payload):
+    if not payload or "response" not in payload or not payload["response"]:
+        return None
+    item = payload["response"][0]
+    bookmakers = item.get("bookmakers", []) or []
+    for bk in bookmakers:
+        bets = bk.get("bets", []) or []
+        for bet in bets:
+            values = bet.get("values", []) or []
+            out = {}
+            for v in values:
+                name = str(v.get("value", "")).upper()
+                odd = v.get("odd")
+                if name in {"HOME", "1"}:
+                    out["1"] = odd
+                elif name in {"DRAW", "X"}:
+                    out["X"] = odd
+                elif name in {"AWAY", "2"}:
+                    out["2"] = odd
+            if out:
+                return {
+                    "bookmaker": bk.get("name", ""),
+                    "1": out.get("1"),
+                    "X": out.get("X"),
+                    "2": out.get("2"),
+                }
+    return None
 
 st.title("Football Predictions")
 st.caption(f"Днес: {date.today().strftime('%Y-%m-%d')}")
@@ -150,7 +179,7 @@ if not API_KEY:
     st.stop()
 
 window_days = st.slider("Lookahead days", 3, 10, 10)
-fixtures_df, fixtures_debug = load_window(date.today().strftime("%Y-%m-%d"), days=window_days)
+fixtures_df, fixtures_debug = load_fixtures_window(date.today().strftime("%Y-%m-%d"), days=window_days)
 
 with st.expander("API debug"):
     for line in fixtures_debug:
@@ -161,9 +190,9 @@ if fixtures_df.empty:
     st.stop()
 
 fixtures_df["league_rank"] = fixtures_df["league_id"].apply(league_rank)
-fixtures_df["league_badge"] = fixtures_df["league_id"].apply(lambda x: importance_badge(league_rank(x)))
+fixtures_df["league_badge"] = fixtures_df["league_id"].apply(lambda x: badge(league_rank(x)))
 
-search = st.text_input("Search team or league", placeholder="Напр. Arsenal, UEFA, Madrid")
+search = st.text_input("Search team or league", placeholder="Напр. World Cup, Arsenal, Madrid")
 filtered = fixtures_df.copy()
 if search:
     q = search.lower()
@@ -178,31 +207,28 @@ if filtered.empty:
     st.info("Няма съвпадения за търсенето.")
     st.stop()
 
-top_matches = (
-    filtered.sort_values(["league_rank", "match_date"], ascending=[False, True])
-    .head(12)
-    .copy()
-)
+top_matches = filtered.sort_values(["league_rank", "match_date"], ascending=[False, True]).head(12).copy()
 
-st.markdown(
-    f"<div style='color:{COLOR_PALETTE['header']};font-size:1.2rem;font-weight:800'>Top matches for the next {window_days} days</div>",
-    unsafe_allow_html=True,
-)
+st.markdown(f"<div style='color:{COLORS['header']};font-size:1.25rem;font-weight:800'>Top matches for the next {window_days} days</div>", unsafe_allow_html=True)
+
 for _, r in top_matches.iterrows():
     with st.container(border=True):
-        st.markdown(
-            f"<div style='color:{COLOR_PALETTE['date']};font-weight:700'>{r['date'].strftime('%A, %d %B %Y')}</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"<div style='color:{COLOR_PALETTE['team']};font-size:1.15rem'><b>{r['home']}</b> vs <b>{r['away']}</b></div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div style='color:{COLORS['date']};font-weight:700'>{pd.to_datetime(r['date']).strftime('%A, %d %B %Y')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='color:{COLORS['team']};font-size:1.15rem'><b>{r['home']}</b> vs <b>{r['away']}</b></div>", unsafe_allow_html=True)
         st.caption(f"{r['league']} • {r['country']} • {r['round']} • {r['match_date'].strftime('%H:%M')} • {r['league_badge']} rank {int(r['league_rank'])}")
         c1, c2, c3 = st.columns(3)
-        c1.markdown(f"<div style='color:{COLOR_PALETTE['pick']};font-weight:700'>Pick: {r['pick']}</div>", unsafe_allow_html=True)
-        c2.markdown(f"<div style='color:{COLOR_PALETTE['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
-        c3.markdown(f"<div style='color:{COLOR_PALETTE['risk']};font-weight:700'>Risk: {r['risk']:.1f}%</div>", unsafe_allow_html=True)
+        c1.markdown(f"<div style='color:{COLORS['pick']};font-weight:700'>Pick: {r['pick']}</div>", unsafe_allow_html=True)
+        c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
+        c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Risk: {r['risk']:.1f}%</div>", unsafe_allow_html=True)
+
+        with st.expander("Odds preview", expanded=False):
+            odds = odds_by_fixture(int(r["fixture_id"]))
+            best = extract_best_odds(odds)
+            if best:
+                st.write(f"Bookmaker: {best['bookmaker']}")
+                st.write(f"1: {best['1']} | X: {best['X']} | 2: {best['2']}")
+            else:
+                st.info("No odds available yet for this fixture.")
 
 st.markdown("## Fixtures by date")
 
@@ -214,17 +240,18 @@ for current_date, day_df in filtered.groupby("date", sort=True):
         for league_name, league_df in leagues:
             league_df = league_df.sort_values("match_date")
             lid = int(league_df.iloc[0]["league_id"])
-            badge = importance_badge(league_rank(lid))
-            with st.expander(f"{badge} {league_name} — {len(league_df)} matches", expanded=False):
+            lg_rank = league_rank(lid)
+            lg_badge = badge(lg_rank)
+            with st.expander(f"{lg_badge} {league_name} — {len(league_df)} matches", expanded=False):
                 for _, r in league_df.iterrows():
                     st.markdown(
                         f"<div style='padding:0.35rem 0.2rem;border-bottom:1px solid #e5e7eb'>"
-                        f"<span style='color:{COLOR_PALETTE['team']};font-weight:700'>{r['home']}</span> "
+                        f"<span style='color:{COLORS['team']};font-weight:700'>{r['home']}</span> "
                         f"vs "
-                        f"<span style='color:{COLOR_PALETTE['team']};font-weight:700'>{r['away']}</span>"
-                        f" <span style='color:{COLOR_PALETTE['muted']}'>({r['match_date'].strftime('%H:%M')})</span>"
-                        f" <span style='color:{COLOR_PALETTE['pick']};font-weight:700'>Pick {r['pick']}</span>"
-                        f" <span style='color:{COLOR_PALETTE['confidence']};font-weight:700'>Conf {r['confidence']:.0f}%</span>"
+                        f"<span style='color:{COLORS['team']};font-weight:700'>{r['away']}</span> "
+                        f"<span style='color:{COLORS['muted']}'>({r['match_date'].strftime('%H:%M')})</span> "
+                        f"<span style='color:{COLORS['pick']};font-weight:700'>Pick {r['pick']}</span> "
+                        f"<span style='color:{COLORS['confidence']};font-weight:700'>Conf {r['confidence']:.0f}%</span>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
