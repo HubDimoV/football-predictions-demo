@@ -1,6 +1,5 @@
 import os
-from datetime import date, timedelta
-
+from datetime import date
 import pandas as pd
 import requests
 import streamlit as st
@@ -12,12 +11,12 @@ BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY} if API_KEY else {}
 
 PREFERRED_LEAGUES = [
-    {"name": "Premier League", "competition_id": 39},
-    {"name": "La Liga", "competition_id": 140},
-    {"name": "Bundesliga", "competition_id": 78},
-    {"name": "Serie A", "competition_id": 135},
-    {"name": "Ligue 1", "competition_id": 61},
-    {"name": "Champions League", "competition_id": 2},
+    {"name": "Premier League", "id": 39},
+    {"name": "La Liga", "id": 140},
+    {"name": "Bundesliga", "id": 78},
+    {"name": "Serie A", "id": 135},
+    {"name": "Ligue 1", "id": 61},
+    {"name": "Champions League", "id": 2},
 ]
 
 def api_get(path, params=None):
@@ -31,6 +30,23 @@ def api_get(path, params=None):
     except Exception as e:
         return None, str(e), None
 
+def pick_from_fixture(item):
+    goals = item.get("goals", {}) or {}
+    hg = goals.get("home")
+    ag = goals.get("away")
+    if hg is not None and ag is not None:
+        if hg > ag:
+            return "1", 95.0, 5.0
+        elif hg < ag:
+            return "2", 95.0, 5.0
+        return "X", 95.0, 5.0
+    league_id = (item.get("league", {}) or {}).get("id") or 0
+    if league_id % 3 == 0:
+        return "1", 64.0, 36.0
+    if league_id % 3 == 1:
+        return "X", 64.0, 36.0
+    return "2", 64.0, 36.0
+
 def parse_fixtures(payload, source_tag=""):
     rows = []
     if not payload or "response" not in payload:
@@ -41,37 +57,20 @@ def parse_fixtures(payload, source_tag=""):
         league = f.get("league", {}) or {}
         teams = f.get("teams", {}) or {}
         goals = f.get("goals", {}) or {}
-
         home = teams.get("home", {}) or {}
         away = teams.get("away", {}) or {}
         status = fixture.get("status", {}) or {}
         dt = fixture.get("date")
-
         if not dt:
             continue
 
-        hg = goals.get("home")
-        ag = goals.get("away")
-
-        if hg is not None and ag is not None:
-            if hg > ag:
-                pick = "1"
-            elif hg < ag:
-                pick = "2"
-            else:
-                pick = "X"
-            confidence = 95.0
-            risk = 5.0
-        else:
-            league_id = league.get("id") or 0
-            pick = "1" if league_id % 3 == 0 else ("X" if league_id % 3 == 1 else "2")
-            confidence = 64.0
-            risk = 36.0
+        pick, confidence, risk = pick_from_fixture(f)
 
         rows.append({
             "fixture_id": fixture.get("id"),
             "match_date": pd.to_datetime(dt, utc=True).tz_convert(None),
             "league": league.get("name", "Unknown"),
+            "league_id": league.get("id"),
             "country": league.get("country", ""),
             "round": league.get("round", ""),
             "home": home.get("name", "Unknown"),
@@ -80,8 +79,8 @@ def parse_fixtures(payload, source_tag=""):
             "pick": pick,
             "confidence": float(confidence),
             "risk": float(risk),
-            "score_home": hg,
-            "score_away": ag,
+            "score_home": goals.get("home"),
+            "score_away": goals.get("away"),
             "source": source_tag,
         })
 
@@ -91,47 +90,87 @@ def parse_fixtures(payload, source_tag=""):
     return df
 
 @st.cache_data(ttl=900)
-def load_today_fixtures():
-    today_str = date.today().strftime("%Y-%m-%d")
-    debug = []
+def load_leagues():
+    code, text, payload = api_get("/leagues", params={"current": "true"})
+    rows = []
+    debug = [f"/leagues?current=true => {code}"]
+    if code != 200 or not payload:
+        debug.append(text[:300])
+        return pd.DataFrame(), debug
 
-    code, text, payload = api_get("/fixtures", params={"date": today_str})
-    debug.append(f"/fixtures?date={today_str} => {code}")
+    for item in payload.get("response", []):
+        league = item.get("league", {}) or {}
+        country = item.get("country", {}) or {}
+        seasons = item.get("seasons", []) or []
+        current_season = None
+        for s in seasons:
+            if s.get("current"):
+                current_season = s.get("year")
+                break
 
-    df = parse_fixtures(payload, source_tag="date=today") if code == 200 else pd.DataFrame()
-    if code != 200:
-        debug.append(text[:400])
+        rows.append({
+            "id": league.get("id"),
+            "name": league.get("name", ""),
+            "type": league.get("type", ""),
+            "country": country.get("name", ""),
+            "season": current_season,
+            "logo": league.get("logo", ""),
+        })
 
-    if df.empty:
-        for league in PREFERRED_LEAGUES[:3]:
-            code2, text2, payload2 = api_get("/fixtures", params={"league": league["competition_id"], "next": 10})
-            debug.append(f"/fixtures?league={league['competition_id']}&next=10 => {code2}")
-            if code2 == 200 and payload2:
-                df2 = parse_fixtures(payload2, source_tag=f"league={league['competition_id']}")
-                if not df2.empty:
-                    df = df2
-                    break
-            else:
-                debug.append(text2[:250])
-
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["country", "name"]).reset_index(drop=True)
     return df, debug
+
+def load_fixtures_for_league(league_id, season):
+    params = {"league": league_id, "season": season, "next": 10}
+    code, text, payload = api_get("/fixtures", params=params)
+    debug = [f"/fixtures?league={league_id}&season={season}&next=10 => {code}"]
+    if code != 200 or not payload:
+        debug.append(text[:300])
+        return pd.DataFrame(), debug
+    return parse_fixtures(payload, source_tag=f"league={league_id}"), debug
 
 st.title("Football Predictions")
 st.caption(f"Днес: {date.today().strftime('%Y-%m-%d')}")
 
-df, debug_lines = load_today_fixtures()
+if not API_KEY:
+    st.error("Липсва API_FOOTBALL_KEY secret.")
+    st.stop()
+
+leagues_df, leagues_debug = load_leagues()
 
 with st.expander("API debug"):
-    for line in debug_lines:
+    for line in leagues_debug:
+        st.write(line)
+
+if leagues_df.empty:
+    st.error("Не можах да заредя лиги. Провери ключа или лимита.")
+    st.stop()
+
+preferred_df = leagues_df[leagues_df["id"].isin([x["id"] for x in PREFERRED_LEAGUES])].copy()
+if preferred_df.empty:
+    preferred_df = leagues_df.head(10).copy()
+
+league_options = {}
+for _, r in preferred_df.iterrows():
+    label = f"{r['country']} - {r['name']} (season {r['season']})"
+    league_options[label] = (int(r["id"]), int(r["season"]) if pd.notna(r["season"]) else date.today().year)
+
+selected_label = st.selectbox("League", list(league_options.keys()))
+selected_league_id, selected_season = league_options[selected_label]
+
+df, fixtures_debug = load_fixtures_for_league(selected_league_id, selected_season)
+
+with st.expander("Fixtures debug"):
+    for line in fixtures_debug:
         st.write(line)
 
 if df.empty:
-    st.warning("Няма fixtures за днес или API-то не връща данни.")
+    st.warning("Няма fixtures за избраната лига/сезон.")
     st.stop()
 
-st.success(f"Loaded {len(df)} fixtures")
-
-search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Premier League")
+search = st.text_input("Search team or league", placeholder="Напр. Arsenal, World Cup, Premier League")
 
 filtered = df.copy()
 if search:
@@ -143,10 +182,12 @@ if search:
         | filtered["country"].str.lower().str.contains(q, na=False)
     ]
 
+st.success(f"Loaded {len(filtered)} fixtures")
+
 for _, r in filtered.iterrows():
     with st.container(border=True):
         st.markdown(f"**{r['home']}** vs **{r['away']}**")
-        st.caption(f"{r['league']} • {r['country']} • {r['round']}")
+        st.caption(f"{r['league']} • {r['country']} • {r['round']} • {r['match_date'].strftime('%d.%m.%Y %H:%M')}")
         c1, c2, c3 = st.columns(3)
         c1.metric("Pick", r["pick"])
         c2.metric("Confidence", f"{r['confidence']:.1f}%")
