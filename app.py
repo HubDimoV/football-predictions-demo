@@ -9,6 +9,8 @@ st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="w
 
 BASE_URL = "https://v3.football.api-sports.io"
 PREDICTION_THRESHOLD = 40
+LOOKAHEAD_DAYS = 10
+NEXT_PER_LEAGUE = 10
 
 IMPORTANT_LEAGUES = {
     2: 100,
@@ -21,6 +23,8 @@ IMPORTANT_LEAGUES = {
     88: 90,
     94: 89,
 }
+
+CANDIDATE_LEAGUES = list(IMPORTANT_LEAGUES.keys())
 
 COLORS = {
     "header": "#1f6feb",
@@ -72,7 +76,7 @@ def badge(rank):
 def score_fixture(row):
     score = 0
     if row.get("has_fixture"):
-        score += 20
+        score += 15
     if row.get("has_odds"):
         score += 20
     if row.get("has_prediction_api"):
@@ -84,37 +88,35 @@ def score_fixture(row):
     if row.get("has_form"):
         score += 10
     if row.get("important_league"):
-        score += 5
+        score += 10
     return min(score, 100)
 
 def prediction_pick(row):
     if row.get("market_pick"):
         return row["market_pick"]
-    if row.get("league_rank", 50) >= 90:
-        return "1" if row.get("home_strength", 0) >= row.get("away_strength", 0) else "2"
-    if row.get("form_home", 0) > row.get("form_away", 0):
+    if row.get("home_strength", 0) > row.get("away_strength", 0):
         return "1"
-    if row.get("form_away", 0) > row.get("form_home", 0):
+    if row.get("away_strength", 0) > row.get("home_strength", 0):
         return "2"
     return "X"
 
 def build_summary(row):
     parts = []
     if row["pick"] == "1":
-        parts.append("домакините имат по-добър профил")
+        parts.append("домакините са по-силният профил")
     elif row["pick"] == "2":
-        parts.append("гостите имат по-добър профил")
+        parts.append("гостите са по-силният профил")
     else:
-        parts.append("мачът изглежда балансиран")
+        parts.append("мачът е балансиран")
 
     if row["has_odds"]:
-        parts.append("пазарът дава допълнителен сигнал")
+        parts.append("има пазарен сигнал")
     if row["has_stats"]:
         parts.append("има статистическа опора")
     if row["has_injuries"]:
-        parts.append("контузиите са отчетени")
+        parts.append("има данни за отсъствия")
     if row["has_prediction_api"]:
-        parts.append("има и външна прогнозна индикация")
+        parts.append("има външна прогнозна индикация")
 
     return "Прогнозата е " + row["pick"] + ", защото " + ", ".join(parts) + "."
 
@@ -145,14 +147,13 @@ def parse_fixtures(payload):
 
         match_date = pd.to_datetime(dt, utc=True).tz_convert(None)
         lid = int(league.get("id") or 0)
-        country = league.get("country", "")
         rows.append({
             "fixture_id": fixture.get("id"),
             "match_date": match_date,
             "date": match_date.date(),
             "league": league.get("name", "Unknown"),
             "league_id": lid,
-            "country": country,
+            "country": league.get("country", ""),
             "round": league.get("round", ""),
             "home": (teams.get("home", {}) or {}).get("name", "Unknown"),
             "away": (teams.get("away", {}) or {}).get("name", "Unknown"),
@@ -166,8 +167,6 @@ def parse_fixtures(payload):
             "important_league": lid in IMPORTANT_LEAGUES,
             "home_strength": 0,
             "away_strength": 0,
-            "form_home": 0,
-            "form_away": 0,
             "market_pick": None,
             "score_home": goals.get("home"),
             "score_away": goals.get("away"),
@@ -175,10 +174,24 @@ def parse_fixtures(payload):
     return pd.DataFrame(rows)
 
 @st.cache_data(ttl=300)
-def load_window(start_date: str, days: int = 10):
+def load_window(start_date: str, days: int = LOOKAHEAD_DAYS):
     all_rows = []
     debug = []
     start = pd.to_datetime(start_date).date()
+
+    for league_id in CANDIDATE_LEAGUES:
+        code, text, payload = api_get("/fixtures", params={"league": league_id, "next": NEXT_PER_LEAGUE})
+        debug.append(f"/fixtures?league={league_id}&next={NEXT_PER_LEAGUE} => {code}")
+        if code == 200 and payload and payload.get("response"):
+            df = parse_fixtures(payload)
+            if not df.empty:
+                all_rows.append(df)
+
+    if all_rows:
+        out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
+        out = out.sort_values(["match_date", "league_id"]).reset_index(drop=True)
+        return out, debug
+
     for i in range(days + 1):
         d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
         code, text, payload = api_get("/fixtures", params={"date": d})
@@ -188,9 +201,12 @@ def load_window(start_date: str, days: int = 10):
         df = parse_fixtures(payload)
         if not df.empty:
             all_rows.append(df)
+
     if all_rows:
         out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
-        return out.sort_values(["match_date", "league_id"]).reset_index(drop=True), debug
+        out = out.sort_values(["match_date", "league_id"]).reset_index(drop=True)
+        return out, debug
+
     return pd.DataFrame(), debug
 
 def enrich_predictions(df):
