@@ -8,8 +8,23 @@ import streamlit as st
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="wide")
 
 BASE_URL = "https://v3.football.api-sports.io"
-COUNTRIES_TO_TEST = ["England", "Spain", "Italy", "Germany", "France", "Netherlands", "Portugal", "Turkey", "Brazil", "Argentina"]
+TOP_COUNTRIES_TO_TEST = 12
 NEXT_PER_LEAGUE = 3
+
+COUNTRY_IDS = [
+    41,   # England
+    62,   # Spain
+    76,   # Italy
+    82,   # Germany
+    98,   # France
+    122,  # Netherlands
+    139,  # Portugal
+    119,  # Turkey
+    6,    # Brazil
+    11,   # Argentina
+    50,   # Belgium
+    20,   # Austria
+]
 
 COLORS = {
     "header": "#1f6feb",
@@ -100,35 +115,32 @@ if not API_KEY:
 debug = []
 all_leagues = []
 
-countries_code, _, countries_payload = api_get("/countries")
-debug.append(f"/countries => {countries_code}")
-
-for country in COUNTRIES_TO_TEST:
-    code, _, leagues_payload = api_get("/leagues", params={"country": country})
-    debug.append(f"/leagues?country={country} => {code}")
-    if code == 200 and leagues_payload and leagues_payload.get("response"):
-        df = parse_leagues(leagues_payload)
+for cid in COUNTRY_IDS:
+    code, _, payload = api_get("/leagues", params={"country": cid})
+    debug.append(f"/leagues?country={cid} => {code}")
+    if code == 200 and payload and payload.get("response"):
+        df = parse_leagues(payload)
         if not df.empty:
+            df["country_id"] = cid
             all_leagues.append(df)
 
 leagues_df = pd.concat(all_leagues, ignore_index=True).drop_duplicates(subset=["league_id", "season"]) if all_leagues else pd.DataFrame()
 
 with st.expander("API debug"):
-    st.write("Countries endpoint:", countries_code)
     st.write("Leagues rows:", len(leagues_df))
     if not leagues_df.empty:
-        st.dataframe(leagues_df.head(25), use_container_width=True)
+        st.dataframe(leagues_df.head(30), use_container_width=True)
     for line in debug:
         st.write(line)
 
 if leagues_df.empty:
-    st.warning("Няма active leagues за тестване по избраните страни.")
+    st.warning("Няма active leagues за тестване по избраните country IDs.")
     st.stop()
 
 test_rows = []
 fixtures_debug = []
 
-for _, lg in leagues_df.head(20).iterrows():
+for _, lg in leagues_df.head(25).iterrows():
     league_id = int(lg["league_id"])
     season = int(lg["season"])
     code, _, payload = api_get("/fixtures", params={
@@ -141,7 +153,7 @@ for _, lg in leagues_df.head(20).iterrows():
     if code == 200 and payload and payload.get("response"):
         df = parse_fixtures(payload)
         if not df.empty:
-            df["source_country"] = lg["country"]
+            df["source_country_id"] = lg["country_id"]
             df["source_league_id"] = league_id
             df["source_season"] = season
             test_rows.append(df)
