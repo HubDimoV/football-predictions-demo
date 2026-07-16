@@ -10,8 +10,9 @@ st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="w
 BASE_URL = "https://v3.football.api-sports.io"
 LOOKAHEAD_DAYS = 10
 TOP_MATCHES_PER_DAY = 10
-MAX_FIXTURES_TO_SCAN = 200
-MIN_ODDS_BOOKMAKERS = 1
+MAX_SEEDS = 250
+MAX_SELECTED_FIXTURES = 20
+MIN_BOOKMAKERS = 1
 
 COLORS = {
     "header": "#1f6feb",
@@ -54,6 +55,8 @@ def parse_fixtures(payload):
         fixture = f.get("fixture", {}) or {}
         league = f.get("league", {}) or {}
         teams = f.get("teams", {}) or {}
+        goals = f.get("goals", {}) or {}
+        status = fixture.get("status", {}) or {}
         dt = fixture.get("date")
         if not dt:
             continue
@@ -69,16 +72,18 @@ def parse_fixtures(payload):
             "round": league.get("round", ""),
             "home": (teams.get("home", {}) or {}).get("name", "Unknown"),
             "away": (teams.get("away", {}) or {}).get("name", "Unknown"),
-            "status": (fixture.get("status", {}) or {}).get("short", ""),
-            "score_home": (f.get("goals", {}) or {}).get("home"),
-            "score_away": (f.get("goals", {}) or {}).get("away"),
+            "status": status.get("short", ""),
+            "score_home": goals.get("home"),
+            "score_away": goals.get("away"),
             "has_odds": False,
             "has_stats": False,
             "has_injuries": False,
             "has_predictions": False,
             "odds_bookmakers": 0,
-            "confidence": 30.0,
+            "confidence": 0.0,
             "confidence_parts": "",
+            "selection_score": 0.0,
+            "selection_parts": "",
         })
     return pd.DataFrame(rows)
 
@@ -110,11 +115,10 @@ def seed_fixtures():
     return pd.DataFrame(), debug
 
 def count_bookmakers(odds_payload):
-    count = 0
+    total = 0
     for item in (odds_payload or {}).get("response", []):
-        bookmakers = item.get("bookmakers", []) or []
-        count += len(bookmakers)
-    return count
+        total += len(item.get("bookmakers", []) or [])
+    return total
 
 def enrich_signals(df):
     if df.empty:
@@ -125,8 +129,9 @@ def enrich_signals(df):
 
         code, _, payload = api_get("/odds", params={"fixture": fid})
         has_odds = bool(code == 200 and payload and payload.get("response"))
+        bookmakers = count_bookmakers(payload) if has_odds else 0
         df.at[idx, "has_odds"] = has_odds
-        df.at[idx, "odds_bookmakers"] = count_bookmakers(payload) if has_odds else 0
+        df.at[idx, "odds_bookmakers"] = bookmakers
 
         code, _, payload = api_get("/injuries", params={"fixture": fid})
         df.at[idx, "has_injuries"] = bool(code == 200 and payload and payload.get("response"))
@@ -137,28 +142,45 @@ def enrich_signals(df):
         code, _, payload = api_get("/fixtures/statistics", params={"fixture": fid})
         df.at[idx, "has_stats"] = bool(code == 200 and payload and payload.get("response"))
 
-        score = 30.0
-        parts = []
-        if df.at[idx, "has_odds"]:
-            score += 20
-            parts.append("odds")
-        if df.at[idx, "odds_bookmakers"] >= MIN_ODDS_BOOKMAKERS:
-            score += 10
-            parts.append("bookmakers")
-        if df.at[idx, "has_stats"]:
-            score += 20
-            parts.append("stats")
-        if df.at[idx, "has_injuries"]:
-            score += 10
-            parts.append("injuries")
+        sel = 0.0
+        sel_parts = []
+        if bookmakers >= MIN_BOOKMAKERS:
+            sel += 35
+            sel_parts.append("bookmakers")
         if df.at[idx, "has_predictions"]:
-            score += 15
-            parts.append("predictions")
+            sel += 25
+            sel_parts.append("predictions")
+        if df.at[idx, "has_stats"]:
+            sel += 20
+            sel_parts.append("stats")
+        if df.at[idx, "has_injuries"]:
+            sel += 10
+            sel_parts.append("injuries")
         if df.at[idx, "score_home"] is not None and df.at[idx, "score_away"] is not None:
-            score += 5
-            parts.append("score")
-        df.at[idx, "confidence"] = min(score, 100)
-        df.at[idx, "confidence_parts"] = ", ".join(parts) if parts else "base"
+            sel += 10
+            sel_parts.append("score")
+        df.at[idx, "selection_score"] = sel
+        df.at[idx, "selection_parts"] = ", ".join(sel_parts) if sel_parts else "base"
+
+        conf = 20.0
+        conf_parts = []
+        if bookmakers >= MIN_BOOKMAKERS:
+            conf += 20
+            conf_parts.append("odds")
+        if df.at[idx, "has_predictions"]:
+            conf += 25
+            conf_parts.append("predictions")
+        if df.at[idx, "has_stats"]:
+            conf += 20
+            conf_parts.append("stats")
+        if df.at[idx, "has_injuries"]:
+            conf += 10
+            conf_parts.append("injuries")
+        if df.at[idx, "score_home"] is not None and df.at[idx, "score_away"] is not None:
+            conf += 5
+            conf_parts.append("score")
+        df.at[idx, "confidence"] = min(conf, 100)
+        df.at[idx, "confidence_parts"] = ", ".join(conf_parts) if conf_parts else "base"
 
     return df
 
@@ -178,26 +200,27 @@ def build_pick(row):
 
 def build_summary(row):
     p = build_pick(row)
-    base = "балансиран"
     if p == "1":
         base = "домакините изглеждат по-силни"
     elif p == "2":
         base = "гостите изглеждат по-силни"
+    else:
+        base = "мачът е балансиран"
     return f"Прогнозата е {p}, защото {base}."
 
 def build_flags(row):
     flags = []
     if not row.get("has_odds"):
         flags.append("no odds")
-    if row.get("odds_bookmakers", 0) < MIN_ODDS_BOOKMAKERS:
+    if row.get("odds_bookmakers", 0) < MIN_BOOKMAKERS:
         flags.append("low bookmaker coverage")
+    if not row.get("has_predictions"):
+        flags.append("no prediction api")
     if not row.get("has_stats"):
         flags.append("limited stats")
     if not row.get("has_injuries"):
         flags.append("no injuries data")
-    if not row.get("has_predictions"):
-        flags.append("no prediction api")
-    if row.get("confidence", 0) < 45:
+    if row.get("confidence", 0) < 50:
         flags.append("low confidence")
     return flags
 
@@ -219,9 +242,9 @@ if df.empty:
     st.warning("Няма fixtures за показване.")
     st.stop()
 
-df = df[df["has_odds"] | df["has_predictions"] | df["has_stats"] | df["has_injuries"]].copy()
+df = df[(df["selection_score"] >= 35) & (df["has_odds"] | df["has_predictions"] | df["has_stats"] | df["has_injuries"])].copy()
 if df.empty:
-    st.warning("Няма fixtures с достатъчно данни за селекция.")
+    st.warning("Няма достатъчно силни мачове за селекция.")
     st.stop()
 
 search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Champions League")
@@ -235,12 +258,12 @@ if search:
         | filtered["country"].str.lower().str.contains(q, na=False)
     ]
 
-filtered["status_label"] = filtered["confidence"].apply(lambda x: "enough data" if x >= 55 else "weak data")
+filtered["status_label"] = filtered["confidence"].apply(lambda x: "enough data" if x >= 60 else "weak data")
 
 st.markdown(f"<div style='color:{COLORS['header']};font-size:1.25rem;font-weight:800'>Top matches for the next {LOOKAHEAD_DAYS} days</div>", unsafe_allow_html=True)
 
 for current_date, day_df in filtered.groupby("date", sort=True):
-    day_df = day_df.sort_values(["confidence", "match_date"], ascending=[False, True])
+    day_df = day_df.sort_values(["selection_score", "confidence", "match_date"], ascending=[False, False, True])
     date_label = pd.to_datetime(current_date).strftime("%A, %d %B %Y")
     with st.expander(f"{date_label} — {len(day_df)} matches", expanded=True):
         display_df = day_df.head(TOP_MATCHES_PER_DAY)
@@ -251,11 +274,11 @@ for current_date, day_df in filtered.groupby("date", sort=True):
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div style='color:{COLORS['pick']};font-weight:700'>Pick: {build_pick(r)}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
-            c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Status: {r['status_label']}</div>", unsafe_allow_html=True)
+            c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Selection score: {r['selection_score']:.0f}</div>", unsafe_allow_html=True)
 
             with st.expander("Summary and flags", expanded=False):
                 st.write(build_summary(r))
-                st.caption(f"Signals: {r['confidence_parts']}")
+                st.caption(f"Signals: {r['selection_parts']} | {r['confidence_parts']}")
                 flags = build_flags(r)
                 if flags:
                     st.markdown("**Red flags**")
@@ -266,7 +289,7 @@ for current_date, day_df in filtered.groupby("date", sort=True):
 
 st.markdown("## Fixtures by date")
 for current_date, day_df in filtered.groupby("date", sort=True):
-    day_df = day_df.sort_values(["confidence", "match_date"], ascending=[False, True])
+    day_df = day_df.sort_values(["selection_score", "confidence", "match_date"], ascending=[False, False, True])
     date_label = pd.to_datetime(current_date).strftime("%A, %d %B %Y")
     with st.expander(f"{date_label} — {len(day_df)} matches", expanded=False):
         for _, r in day_df.iterrows():
