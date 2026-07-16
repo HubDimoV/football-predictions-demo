@@ -83,14 +83,17 @@ def parse_fixtures(payload):
 def seed_fixtures():
     debug = []
     all_rows = []
-    start = date.today()
-    end = start + timedelta(days=LOOKAHEAD_DAYS)
+    today = date.today()
+    end = today + timedelta(days=LOOKAHEAD_DAYS)
 
-    for params in [
-        {"date": start.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
-        {"from": start.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
+    queries = [
+        {"live": "all", "timezone": "Europe/Sofia"},
+        {"date": today.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
+        {"from": today.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
         {"next": LOOKAHEAD_DAYS, "timezone": "Europe/Sofia"},
-    ]:
+    ]
+
+    for params in queries:
         code, _, payload = api_get("/fixtures", params=params)
         debug.append(f"/fixtures?{params} => {code}")
         if code == 200 and payload and payload.get("response"):
