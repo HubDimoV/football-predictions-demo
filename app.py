@@ -67,7 +67,7 @@ def badge(rank):
         return "✅"
     return "•"
 
-def parse_fixtures_api_football(payload):
+def parse_af(payload):
     rows = []
     for f in (payload or {}).get("response", []):
         fixture = f.get("fixture", {}) or {}
@@ -80,7 +80,6 @@ def parse_fixtures_api_football(payload):
         dt = fixture.get("date")
         if not dt:
             continue
-
         hg, ag = goals.get("home"), goals.get("away")
         if hg is not None and ag is not None:
             pick = "1" if hg > ag else "2" if hg < ag else "X"
@@ -89,7 +88,6 @@ def parse_fixtures_api_football(payload):
             lid = league.get("id") or 0
             pick = "1" if lid % 3 == 0 else ("X" if lid % 3 == 1 else "2")
             confidence, risk = 64.0, 36.0
-
         rows.append({
             "source": "api-football",
             "fixture_id": f"af_{fixture.get('id')}",
@@ -108,21 +106,26 @@ def parse_fixtures_api_football(payload):
             "score_home": hg,
             "score_away": ag,
         })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("match_date").reset_index(drop=True)
+    return df
 
-    return pd.DataFrame(rows)
-
-def parse_worldcup(payload):
+def parse_wc(payload):
     rows = []
     data = payload.get("data", []) if isinstance(payload, dict) else []
     for m in data:
         dt = m.get("date") or m.get("kickoff") or m.get("match_time")
         if not dt:
             continue
+        ts = pd.to_datetime(dt, utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
         rows.append({
             "source": "worldcupapi",
             "fixture_id": f"wc_{m.get('id') or m.get('match_id') or dt}",
-            "match_date": pd.to_datetime(dt, utc=True, errors="coerce").tz_convert(None),
-            "date": pd.to_datetime(dt, utc=True, errors="coerce").tz_convert(None).date(),
+            "match_date": ts.tz_convert(None),
+            "date": ts.tz_convert(None).date(),
             "league": m.get("competition", "FIFA World Cup"),
             "league_id": 9999,
             "country": m.get("country", "International"),
@@ -142,18 +145,18 @@ def parse_worldcup(payload):
     return df
 
 @st.cache_data(ttl=300)
-def load_api_football_window(start_date: str, days: int = 10):
+def load_af_window(start_date: str, days: int = 10):
     all_rows = []
     debug = []
     start = pd.to_datetime(start_date).date()
     for i in range(days + 1):
         d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
         code, text, payload = api_get(f"{BASE_URL}/fixtures", params={"date": d}, headers=HEADERS)
-        debug.append(f"/fixtures?date={d} => {code}")
+        debug.append(f"AF /fixtures?date={d} => {code}")
         if code != 200 or not payload:
             debug.append(text[:250])
             continue
-        df = parse_fixtures_api_football(payload)
+        df = parse_af(payload)
         if not df.empty:
             all_rows.append(df)
     if all_rows:
@@ -163,7 +166,7 @@ def load_api_football_window(start_date: str, days: int = 10):
     return pd.DataFrame(), debug
 
 @st.cache_data(ttl=300)
-def load_worldcup_fallback(start_date: str, days: int = 10):
+def load_wc_window(start_date: str, days: int = 10):
     all_rows = []
     debug = []
     start = pd.to_datetime(start_date).date()
@@ -174,7 +177,7 @@ def load_worldcup_fallback(start_date: str, days: int = 10):
         if code != 200 or not payload:
             debug.append(text[:250])
             continue
-        df = parse_worldcup(payload)
+        df = parse_wc(payload)
         if not df.empty:
             all_rows.append(df)
     if all_rows:
@@ -220,9 +223,8 @@ if not API_KEY:
     st.stop()
 
 window_days = st.slider("Lookahead days", 3, 10, 10)
-
-af_df, af_debug = load_api_football_window(date.today().strftime("%Y-%m-%d"), days=window_days)
-wc_df, wc_debug = load_worldcup_fallback(date.today().strftime("%Y-%m-%d"), days=window_days)
+af_df, af_debug = load_af_window(date.today().strftime("%Y-%m-%d"), days=window_days)
+wc_df, wc_debug = load_wc_window(date.today().strftime("%Y-%m-%d"), days=window_days)
 
 with st.expander("API debug"):
     for line in af_debug:
@@ -231,14 +233,12 @@ with st.expander("API debug"):
         st.write(line)
 
 combined = pd.concat([af_df, wc_df], ignore_index=True) if not af_df.empty or not wc_df.empty else pd.DataFrame()
-
 if combined.empty:
     st.warning("Няма fixtures за днес и следващите дни.")
     st.stop()
 
 combined["league_rank"] = combined["league_id"].apply(league_rank)
 combined["league_badge"] = combined["league_id"].apply(lambda x: badge(league_rank(x)))
-combined["sort_league"] = combined["league_rank"]
 
 search = st.text_input("Search team or league", placeholder="Напр. World Cup, Arsenal, Madrid")
 filtered = combined.copy()
@@ -255,29 +255,30 @@ if filtered.empty:
     st.info("Няма съвпадения за търсенето.")
     st.stop()
 
-top_matches = filtered.sort_values(["date", "league_rank", "match_date"], ascending=[True, False, True]).head(12).copy()
-
 st.markdown(f"<div style='color:{COLORS['header']};font-size:1.25rem;font-weight:800'>Top matches for the next {window_days} days</div>", unsafe_allow_html=True)
-for _, r in top_matches.iterrows():
-    with st.container(border=True):
-        if r["source"] == "worldcupapi":
-            st.markdown(f"<div style='color:{COLORS['wc']};font-weight:800'>WORLD CUP Fallback</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='color:{COLORS['date']};font-weight:700'>{pd.to_datetime(r['date']).strftime('%A, %d %B %Y')}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='color:{COLORS['team']};font-size:1.15rem'><b>{r['home']}</b> vs <b>{r['away']}</b></div>", unsafe_allow_html=True)
-        st.caption(f"{r['league']} • {r['country']} • {r['round']} • {r['match_date'].strftime('%H:%M')} • {r['league_badge']} rank {int(r['league_rank'])}")
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f"<div style='color:{COLORS['pick']};font-weight:700'>Pick: {r['pick']}</div>", unsafe_allow_html=True)
-        c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
-        c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Risk: {r['risk']:.1f}%</div>", unsafe_allow_html=True)
-
-        with st.expander("Odds preview", expanded=False):
-            odds = odds_by_fixture(int(str(r["fixture_id"]).replace("af_", ""))) if r["source"] == "api-football" else None
-            best = extract_best_odds(odds)
-            if best:
-                st.write(f"Bookmaker: {best['bookmaker']}")
-                st.write(f"1: {best['1']} | X: {best['X']} | 2: {best['2']}")
-            else:
-                st.info("No odds available yet for this fixture.")
+top_df = filtered.sort_values(["league_rank", "match_date"], ascending=[False, True]).copy()
+for league_name, league_df in top_df.groupby("league", sort=False):
+    league_df = league_df.sort_values("match_date")
+    lid = int(league_df.iloc[0]["league_id"])
+    lg_rank = league_rank(lid)
+    lg_badge = badge(lg_rank)
+    with st.expander(f"{lg_badge} {league_name} — {len(league_df)} matches", expanded=False):
+        for _, r in league_df.iterrows():
+            st.markdown(f"<div style='color:{COLORS['date']};font-weight:700'>{pd.to_datetime(r['date']).strftime('%A, %d %B %Y')}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color:{COLORS['team']};font-size:1.1rem'><b>{r['home']}</b> vs <b>{r['away']}</b></div>", unsafe_allow_html=True)
+            st.caption(f"{r['country']} • {r['round']} • {r['match_date'].strftime('%H:%M')} • {r['league_badge']} rank {int(r['league_rank'])}")
+            c1, c2, c3 = st.columns(3)
+            c1.markdown(f"<div style='color:{COLORS['pick']};font-weight:700'>Pick: {r['pick']}</div>", unsafe_allow_html=True)
+            c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
+            c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Risk: {r['risk']:.1f}%</div>", unsafe_allow_html=True)
+            with st.expander("Odds preview", expanded=False):
+                odds = odds_by_fixture(int(str(r["fixture_id"]).replace("af_", ""))) if r["source"] == "api-football" else None
+                best = extract_best_odds(odds)
+                if best:
+                    st.write(f"Bookmaker: {best['bookmaker']}")
+                    st.write(f"1: {best['1']} | X: {best['X']} | 2: {best['2']}")
+                else:
+                    st.info("No odds available yet for this fixture.")
 
 st.markdown("## Fixtures by date")
 for current_date, day_df in filtered.groupby("date", sort=True):
@@ -302,5 +303,3 @@ for current_date, day_df in filtered.groupby("date", sort=True):
                         f"</div>",
                         unsafe_allow_html=True,
                     )
-                    if pd.notna(r["score_home"]) and pd.notna(r["score_away"]):
-                        st.caption(f"Final score: {r['score_home']} - {r['score_away']}")
