@@ -41,9 +41,9 @@ def api_get(path, params=None):
             payload = r.json()
         except Exception:
             payload = None
-        return r.status_code, r.text, payload
-    except Exception as e:
-        return None, str(e), None
+        return r.status_code, payload
+    except Exception:
+        return None, None
 
 def parse_fixtures(payload):
     rows = []
@@ -94,7 +94,7 @@ def seed_fixtures():
     ]
 
     for params in queries:
-        code, _, payload = api_get("/fixtures", params=params)
+        code, payload = api_get("/fixtures", params=params)
         debug.append(f"/fixtures?{params} => {code}")
         if code == 200 and payload and payload.get("response"):
             df = parse_fixtures(payload)
@@ -121,18 +121,18 @@ def enrich_signals(df):
     for idx in df.index:
         fid = df.at[idx, "fixture_id"]
 
-        code, _, payload = api_get("/odds", params={"fixture": fid})
+        code, payload = api_get("/odds", params={"fixture": fid})
         has_odds = bool(code == 200 and payload and payload.get("response"))
         df.at[idx, "has_odds"] = has_odds
         df.at[idx, "odds_bookmakers"] = count_bookmakers(payload) if has_odds else 0
 
-        code, _, payload = api_get("/injuries", params={"fixture": fid})
+        code, payload = api_get("/injuries", params={"fixture": fid})
         df.at[idx, "has_injuries"] = bool(code == 200 and payload and payload.get("response"))
 
-        code, _, payload = api_get("/predictions", params={"fixture": fid})
+        code, payload = api_get("/predictions", params={"fixture": fid})
         df.at[idx, "has_predictions"] = bool(code == 200 and payload and payload.get("response"))
 
-        code, _, payload = api_get("/fixtures/statistics", params={"fixture": fid})
+        code, payload = api_get("/fixtures/statistics", params={"fixture": fid})
         df.at[idx, "has_stats"] = bool(code == 200 and payload and payload.get("response"))
 
         conf = 20.0
@@ -152,9 +152,6 @@ def enrich_signals(df):
         if df.at[idx, "has_injuries"]:
             conf += 10
             parts.append("injuries")
-        if df.at[idx, "score_home"] is not None and df.at[idx, "score_away"] is not None:
-            conf += 5
-            parts.append("score")
         df.at[idx, "confidence"] = min(conf, 100)
         df.at[idx, "confidence_parts"] = ", ".join(parts) if parts else "base"
     return df
@@ -212,7 +209,7 @@ with st.expander("API debug"):
         st.write(line)
 
 if df.empty:
-    st.warning("Няма fixtures за показване.")
+    st.warning("Няма real fixtures за показване.")
     st.stop()
 
 search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Champions League")
@@ -241,7 +238,7 @@ for current_date, day_df in filtered.groupby("date", sort=True):
             c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
             c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Status: {'enough data' if r['confidence'] >= 50 else 'weak data'}</div>", unsafe_allow_html=True)
 
-            with st.expander("Summary and flags", expanded=False):
+            with st.expander("Analyze", expanded=False):
                 st.write(build_summary(r))
                 st.caption(f"Signals: {r['confidence_parts']}")
                 flags = build_flags(r)
