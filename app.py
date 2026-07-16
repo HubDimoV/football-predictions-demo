@@ -6,18 +6,18 @@ import streamlit as st
 
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="centered")
 
-API_KEY = os.getenv("API_FOOTBALL_KEY", "")
+def get_api_key():
+    try:
+        key = st.secrets.get("API_FOOTBALL_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.getenv("API_FOOTBALL_KEY", "")
+
+API_KEY = get_api_key()
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY} if API_KEY else {}
-
-PREFERRED_LEAGUES = [
-    {"name": "Premier League", "id": 39},
-    {"name": "La Liga", "id": 140},
-    {"name": "Bundesliga", "id": 78},
-    {"name": "Serie A", "id": 135},
-    {"name": "Ligue 1", "id": 61},
-    {"name": "Champions League", "id": 2},
-]
 
 def api_get(path, params=None):
     try:
@@ -30,24 +30,7 @@ def api_get(path, params=None):
     except Exception as e:
         return None, str(e), None
 
-def pick_from_fixture(item):
-    goals = item.get("goals", {}) or {}
-    hg = goals.get("home")
-    ag = goals.get("away")
-    if hg is not None and ag is not None:
-        if hg > ag:
-            return "1", 95.0, 5.0
-        elif hg < ag:
-            return "2", 95.0, 5.0
-        return "X", 95.0, 5.0
-    league_id = (item.get("league", {}) or {}).get("id") or 0
-    if league_id % 3 == 0:
-        return "1", 64.0, 36.0
-    if league_id % 3 == 1:
-        return "X", 64.0, 36.0
-    return "2", 64.0, 36.0
-
-def parse_fixtures(payload, source_tag=""):
+def parse_fixtures(payload):
     rows = []
     if not payload or "response" not in payload:
         return pd.DataFrame()
@@ -61,10 +44,20 @@ def parse_fixtures(payload, source_tag=""):
         away = teams.get("away", {}) or {}
         status = fixture.get("status", {}) or {}
         dt = fixture.get("date")
+
         if not dt:
             continue
 
-        pick, confidence, risk = pick_from_fixture(f)
+        hg = goals.get("home")
+        ag = goals.get("away")
+
+        if hg is not None and ag is not None:
+            pick = "1" if hg > ag else "2" if hg < ag else "X"
+            confidence, risk = 95.0, 5.0
+        else:
+            league_id = league.get("id") or 0
+            pick = "1" if league_id % 3 == 0 else ("X" if league_id % 3 == 1 else "2")
+            confidence, risk = 64.0, 36.0
 
         rows.append({
             "fixture_id": fixture.get("id"),
@@ -79,9 +72,8 @@ def parse_fixtures(payload, source_tag=""):
             "pick": pick,
             "confidence": float(confidence),
             "risk": float(risk),
-            "score_home": goals.get("home"),
-            "score_away": goals.get("away"),
-            "source": source_tag,
+            "score_home": hg,
+            "score_away": ag,
         })
 
     df = pd.DataFrame(rows)
@@ -92,8 +84,9 @@ def parse_fixtures(payload, source_tag=""):
 @st.cache_data(ttl=900)
 def load_leagues():
     code, text, payload = api_get("/leagues", params={"current": "true"})
-    rows = []
     debug = [f"/leagues?current=true => {code}"]
+    rows = []
+
     if code != 200 or not payload:
         debug.append(text[:300])
         return pd.DataFrame(), debug
@@ -102,11 +95,15 @@ def load_leagues():
         league = item.get("league", {}) or {}
         country = item.get("country", {}) or {}
         seasons = item.get("seasons", []) or []
+
         current_season = None
         for s in seasons:
             if s.get("current"):
                 current_season = s.get("year")
                 break
+
+        if current_season is None and seasons:
+            current_season = seasons[0].get("year")
 
         rows.append({
             "id": league.get("id"),
@@ -129,7 +126,7 @@ def load_fixtures_for_league(league_id, season):
     if code != 200 or not payload:
         debug.append(text[:300])
         return pd.DataFrame(), debug
-    return parse_fixtures(payload, source_tag=f"league={league_id}"), debug
+    return parse_fixtures(payload), debug
 
 st.title("Football Predictions")
 st.caption(f"Днес: {date.today().strftime('%Y-%m-%d')}")
@@ -145,17 +142,20 @@ with st.expander("API debug"):
         st.write(line)
 
 if leagues_df.empty:
-    st.error("Не можах да заредя лиги. Провери ключа или лимита.")
+    st.error("Не можах да заредя лиги. Провери secret-а или лимита.")
     st.stop()
 
-preferred_df = leagues_df[leagues_df["id"].isin([x["id"] for x in PREFERRED_LEAGUES])].copy()
-if preferred_df.empty:
-    preferred_df = leagues_df.head(10).copy()
+# Автоматичен избор на лига:
+preferred_ids = [39, 140, 78, 135, 61, 2]
+pref = leagues_df[leagues_df["id"].isin(preferred_ids)].copy()
+source_df = pref if not pref.empty else leagues_df.copy()
 
+# Първо автоматично избирай лига със сезон и после превържи fixtures
 league_options = {}
-for _, r in preferred_df.iterrows():
-    label = f"{r['country']} - {r['name']} (season {r['season']})"
-    league_options[label] = (int(r["id"]), int(r["season"]) if pd.notna(r["season"]) else date.today().year)
+for _, r in source_df.iterrows():
+    season_val = int(r["season"]) if pd.notna(r["season"]) else date.today().year
+    label = f"{r['country']} - {r['name']} (season {season_val})"
+    league_options[label] = (int(r["id"]), season_val)
 
 selected_label = st.selectbox("League", list(league_options.keys()))
 selected_league_id, selected_season = league_options[selected_label]
@@ -170,7 +170,7 @@ if df.empty:
     st.warning("Няма fixtures за избраната лига/сезон.")
     st.stop()
 
-search = st.text_input("Search team or league", placeholder="Напр. Arsenal, World Cup, Premier League")
+search = st.text_input("Search team or league", placeholder="Напр. Arsenal")
 
 filtered = df.copy()
 if search:
