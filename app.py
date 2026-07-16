@@ -1,5 +1,5 @@
 import os
-from datetime import date, timedelta
+from datetime import date
 
 import pandas as pd
 import requests
@@ -8,21 +8,8 @@ import streamlit as st
 st.set_page_config(page_title="Football Predictions", page_icon="⚽", layout="wide")
 
 BASE_URL = "https://v3.football.api-sports.io"
-LOOKAHEAD_DAYS = 10
-TOP_MATCHES_PER_DAY = 10
-MAX_LEAGUES_TO_TRY = 25
-
-IMPORTANT_LEAGUES = {
-    39: 96,
-    140: 95,
-    135: 93,
-    78: 94,
-    61: 92,
-    2: 100,
-    3: 97,
-    88: 90,
-    94: 89,
-}
+TOP_LEAGUES_TO_TEST = 10
+NEXT_PER_LEAGUE = 3
 
 COLORS = {
     "header": "#1f6feb",
@@ -59,17 +46,26 @@ def api_get(path, params=None):
     except Exception as e:
         return None, str(e), None
 
-def league_rank(league_id):
-    return IMPORTANT_LEAGUES.get(int(league_id or 0), 50)
-
-def badge(rank):
-    if rank >= 95:
-        return "🔥"
-    if rank >= 90:
-        return "⭐"
-    if rank >= 80:
-        return "✅"
-    return "•"
+def parse_leagues(payload):
+    rows = []
+    for item in (payload or {}).get("response", []):
+        league = item.get("league", {}) or {}
+        country = item.get("country", {}) or {}
+        seasons = item.get("seasons", []) or []
+        for s in seasons:
+            if s.get("current"):
+                rows.append({
+                    "league_id": league.get("id"),
+                    "league": league.get("name", "Unknown"),
+                    "country": country.get("name", ""),
+                    "season": s.get("year"),
+                })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["league_id"] = pd.to_numeric(df["league_id"], errors="coerce")
+        df["season"] = pd.to_numeric(df["season"], errors="coerce")
+        df = df.dropna(subset=["league_id", "season"])
+    return df
 
 def parse_fixtures(payload):
     rows = []
@@ -77,192 +73,22 @@ def parse_fixtures(payload):
         fixture = f.get("fixture", {}) or {}
         league = f.get("league", {}) or {}
         teams = f.get("teams", {}) or {}
-        goals = f.get("goals", {}) or {}
-        status = fixture.get("status", {}) or {}
         dt = fixture.get("date")
         if not dt:
             continue
         md = pd.to_datetime(dt, utc=True).tz_convert(None)
-        lid = int(league.get("id") or 0)
         rows.append({
             "fixture_id": fixture.get("id"),
-            "match_date": md,
             "date": md.date(),
-            "league_id": lid,
+            "time": md.strftime("%H:%M"),
+            "league_id": league.get("id"),
             "league": league.get("name", "Unknown"),
             "country": league.get("country", ""),
-            "round": league.get("round", ""),
             "home": (teams.get("home", {}) or {}).get("name", "Unknown"),
             "away": (teams.get("away", {}) or {}).get("name", "Unknown"),
-            "status": status.get("short", ""),
-            "score_home": goals.get("home"),
-            "score_away": goals.get("away"),
-            "has_odds": False,
-            "has_stats": False,
-            "has_injuries": False,
-            "has_predictions": False,
-            "confidence": 30.0,
-            "confidence_parts": "",
-            "league_rank": league_rank(lid),
+            "status": (fixture.get("status", {}) or {}).get("short", ""),
         })
     return pd.DataFrame(rows)
-
-def get_leagues_source():
-    debug = []
-    rows = []
-    code, _, payload = api_get("/leagues")
-    debug.append(f"/leagues => {code}")
-    if code == 200 and payload and payload.get("response"):
-        for item in payload.get("response", []):
-            league = item.get("league", {}) or {}
-            country = item.get("country", {}) or {}
-            seasons = item.get("seasons", []) or []
-            for s in seasons:
-                if s.get("current"):
-                    rows.append({
-                        "league_id": league.get("id"),
-                        "league": league.get("name", "Unknown"),
-                        "country": country.get("name", ""),
-                        "season": s.get("year"),
-                        "rank": league_rank(league.get("id")),
-                    })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values(["rank", "league_id"], ascending=[False, True]).head(MAX_LEAGUES_TO_TRY).reset_index(drop=True)
-    return df, debug
-
-def load_fixtures_from_leagues(leagues_df):
-    debug = []
-    all_rows = []
-    if leagues_df.empty:
-        return pd.DataFrame(), debug
-
-    for _, lg in leagues_df.iterrows():
-        code, _, payload = api_get("/fixtures", params={
-            "league": int(lg["league_id"]),
-            "season": int(lg["season"]),
-            "next": LOOKAHEAD_DAYS,
-            "timezone": "Europe/Sofia",
-        })
-        debug.append(f"/fixtures?league={int(lg['league_id'])}&season={int(lg['season'])}&next={LOOKAHEAD_DAYS} => {code}")
-        if code == 200 and payload and payload.get("response"):
-            df = parse_fixtures(payload)
-            if not df.empty:
-                all_rows.append(df)
-
-    if all_rows:
-        out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
-        out = out.sort_values(["date", "league_rank", "match_date"], ascending=[True, False, True]).reset_index(drop=True)
-        return out, debug
-
-    return pd.DataFrame(), debug
-
-def load_fixtures_fallback():
-    debug = []
-    all_rows = []
-    start = date.today()
-    end = start + timedelta(days=LOOKAHEAD_DAYS)
-
-    for params in [
-        {"from": start.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
-        {"date": start.strftime("%Y-%m-%d"), "timezone": "Europe/Sofia"},
-    ]:
-        code, _, payload = api_get("/fixtures", params=params)
-        debug.append(f"/fixtures?{params} => {code}")
-        if code == 200 and payload and payload.get("response"):
-            df = parse_fixtures(payload)
-            if not df.empty:
-                all_rows.append(df)
-
-    if all_rows:
-        out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
-        out = out.sort_values(["date", "league_rank", "match_date"], ascending=[True, False, True]).reset_index(drop=True)
-        return out, debug
-
-    return pd.DataFrame(), debug
-
-def score_confidence(row):
-    score = 25.0
-    parts = []
-    if row.get("has_odds"):
-        score += 25
-        parts.append("odds")
-    if row.get("has_stats"):
-        score += 20
-        parts.append("stats")
-    if row.get("has_injuries"):
-        score += 10
-        parts.append("injuries")
-    if row.get("has_predictions"):
-        score += 10
-        parts.append("predictions")
-    if row.get("league_rank", 50) >= 90:
-        score += 5
-        parts.append("league")
-    if row.get("score_home") is not None and row.get("score_away") is not None:
-        score += 5
-        parts.append("score")
-    return min(score, 100), ", ".join(parts) if parts else "base"
-
-def enrich_signals(df):
-    if df.empty:
-        return df
-    df = df.copy()
-    for idx in df.index:
-        fid = df.at[idx, "fixture_id"]
-
-        code, _, payload = api_get("/odds", params={"fixture": fid})
-        df.at[idx, "has_odds"] = bool(code == 200 and payload and payload.get("response"))
-
-        code, _, payload = api_get("/injuries", params={"fixture": fid})
-        df.at[idx, "has_injuries"] = bool(code == 200 and payload and payload.get("response"))
-
-        code, _, payload = api_get("/predictions", params={"fixture": fid})
-        df.at[idx, "has_predictions"] = bool(code == 200 and payload and payload.get("response"))
-
-        code, _, payload = api_get("/fixtures/statistics", params={"fixture": fid})
-        df.at[idx, "has_stats"] = bool(code == 200 and payload and payload.get("response"))
-
-        conf, parts = score_confidence(df.loc[idx].to_dict())
-        df.at[idx, "confidence"] = conf
-        df.at[idx, "confidence_parts"] = parts
-
-    return df
-
-def build_pick(row):
-    if row["score_home"] is not None and row["score_away"] is not None:
-        if row["score_home"] > row["score_away"]:
-            return "1"
-        if row["score_away"] > row["score_home"]:
-            return "2"
-        return "X"
-    fid = int(row.get("fixture_id") or 0)
-    if fid % 3 == 0:
-        return "X"
-    if fid % 2 == 0:
-        return "1"
-    return "2"
-
-def build_summary(row):
-    p = build_pick(row)
-    base = "балансиран"
-    if p == "1":
-        base = "домакините изглеждат по-силни"
-    elif p == "2":
-        base = "гостите изглеждат по-силни"
-    return f"Прогнозата е {p}, защото {base}."
-
-def build_flags(row):
-    flags = []
-    if not row.get("has_odds"):
-        flags.append("no odds")
-    if not row.get("has_stats"):
-        flags.append("limited stats")
-    if not row.get("has_injuries"):
-        flags.append("no injuries data")
-    if not row.get("has_predictions"):
-        flags.append("no prediction api")
-    return flags
 
 st.title("Football Predictions")
 st.caption(f"Днес: {date.today().strftime('%Y-%m-%d')}")
@@ -271,77 +97,59 @@ if not API_KEY:
     st.error("Липсва API_FOOTBALL_KEY secret.")
     st.stop()
 
-leagues_df, leagues_debug = get_leagues_source()
-fixtures_df, fixtures_debug = load_fixtures_from_leagues(leagues_df)
-debug = leagues_debug + fixtures_debug
+debug = []
+leagues_code, _, leagues_payload = api_get("/leagues")
+debug.append(f"/leagues => {leagues_code}")
 
-if fixtures_df.empty:
-    fixtures_df, fb_debug = load_fixtures_fallback()
-    debug.extend(fb_debug)
-
-fixtures_df = enrich_signals(fixtures_df)
+leagues_df = parse_leagues(leagues_payload) if leagues_code == 200 else pd.DataFrame()
 
 with st.expander("API debug"):
+    st.write("Leagues count:", len(leagues_df))
+    if not leagues_df.empty:
+        st.dataframe(leagues_df.head(TOP_LEAGUES_TO_TEST))
     for line in debug:
         st.write(line)
 
-if fixtures_df.empty:
-    st.warning("Няма fixtures за показване.")
+if leagues_df.empty:
+    st.warning("Няма active leagues за тестване.")
     st.stop()
 
-search = st.text_input("Search team or league", placeholder="Напр. Arsenal, Champions League")
-filtered = fixtures_df.copy()
-if search:
-    q = search.lower()
-    filtered = filtered[
-        filtered["home"].str.lower().str.contains(q, na=False)
-        | filtered["away"].str.lower().str.contains(q, na=False)
-        | filtered["league"].str.lower().str.contains(q, na=False)
-        | filtered["country"].str.lower().str.contains(q, na=False)
-    ]
+test_rows = []
+fixtures_debug = []
 
-filtered["status_label"] = filtered["confidence"].apply(lambda x: "enough data" if x >= 45 else "weak data")
+for _, lg in leagues_df.head(TOP_LEAGUES_TO_TEST).iterrows():
+    league_id = int(lg["league_id"])
+    season = int(lg["season"])
+    code, _, payload = api_get("/fixtures", params={
+        "league": league_id,
+        "season": season,
+        "next": NEXT_PER_LEAGUE,
+        "timezone": "Europe/Sofia",
+    })
+    fixtures_debug.append(f"/fixtures?league={league_id}&season={season}&next={NEXT_PER_LEAGUE} => {code}")
+    if code == 200 and payload and payload.get("response"):
+        df = parse_fixtures(payload)
+        if not df.empty:
+            df["source_league_id"] = league_id
+            df["source_season"] = season
+            test_rows.append(df)
 
-st.markdown(f"<div style='color:{COLORS['header']};font-size:1.25rem;font-weight:800'>Top matches for the next {LOOKAHEAD_DAYS} days</div>", unsafe_allow_html=True)
+with st.expander("Fixtures debug"):
+    for line in fixtures_debug:
+        st.write(line)
 
-for current_date, day_df in filtered.groupby("date", sort=True):
-    day_df = day_df.sort_values(["confidence", "league_rank", "match_date"], ascending=[False, False, True])
-    date_label = pd.to_datetime(current_date).strftime("%A, %d %B %Y")
-    with st.expander(f"{date_label} — {len(day_df)} matches", expanded=True):
-        display_df = day_df.head(TOP_MATCHES_PER_DAY)
-        for _, r in display_df.iterrows():
-            st.markdown(f"<div style='color:{COLORS['date']};font-weight:700'>{r['league']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='color:{COLORS['team']};font-size:1.1rem'><b>{r['home']}</b> vs <b>{r['away']}</b></div>", unsafe_allow_html=True)
-            st.caption(f"{r['country']} • {r['round']} • {r['match_date'].strftime('%H:%M')} • {r['status_label']}")
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"<div style='color:{COLORS['pick']};font-weight:700'>Pick: {build_pick(r)}</div>", unsafe_allow_html=True)
-            c2.markdown(f"<div style='color:{COLORS['confidence']};font-weight:700'>Confidence: {r['confidence']:.1f}%</div>", unsafe_allow_html=True)
-            c3.markdown(f"<div style='color:{COLORS['risk']};font-weight:700'>Status: {r['status_label']}</div>", unsafe_allow_html=True)
-            with st.expander("Summary and flags", expanded=False):
-                st.write(build_summary(r))
-                if r.get("confidence_parts"):
-                    st.caption(f"Signals: {r['confidence_parts']}")
-                flags = build_flags(r)
-                if flags:
-                    st.markdown("**Red flags**")
-                    for f in flags:
-                        st.markdown(f"- <span style='color:{COLORS['flag']};font-weight:700'>{f}</span>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<span style='color:{COLORS['ok']};font-weight:700'>No major red flags detected from the current data set.</span>", unsafe_allow_html=True)
+if not test_rows:
+    st.warning("Нито една от тестваните лиги не върна fixtures.")
+    st.stop()
 
-st.markdown("## Fixtures by date")
-for current_date, day_df in filtered.groupby("date", sort=True):
-    day_df = day_df.sort_values(["confidence", "league_rank", "match_date"], ascending=[False, False, True])
-    date_label = pd.to_datetime(current_date).strftime("%A, %d %B %Y")
-    with st.expander(f"{date_label} — {len(day_df)} matches", expanded=False):
+out = pd.concat(test_rows, ignore_index=True).drop_duplicates(subset=["fixture_id"])
+out = out.sort_values(["date", "time", "league"], ascending=[True, True, True]).reset_index(drop=True)
+
+st.success(f"Намерени fixtures: {len(out)}")
+st.dataframe(out, use_container_width=True)
+
+st.markdown("## Matches")
+for d, day_df in out.groupby("date", sort=True):
+    with st.expander(f"{d} — {len(day_df)} matches", expanded=True):
         for _, r in day_df.iterrows():
-            st.markdown(
-                f"<div style='padding:0.35rem 0.2rem;border-bottom:1px solid #e5e7eb'>"
-                f"<span style='color:{COLORS['team']};font-weight:700'>{r['home']}</span> vs "
-                f"<span style='color:{COLORS['team']};font-weight:700'>{r['away']}</span> "
-                f"<span style='color:{COLORS['muted']}'>({r['match_date'].strftime('%H:%M')})</span> "
-                f"<span style='color:{COLORS['pick']};font-weight:700'>Pick {build_pick(r)}</span> "
-                f"<span style='color:{COLORS['confidence']};font-weight:700'>Conf {r['confidence']:.0f}%</span>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"**{r['league']}** • {r['home']} vs {r['away']} • {r['time']} • {r['status']}")
