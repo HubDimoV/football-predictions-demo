@@ -1,18 +1,22 @@
 import os
+import math
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 API_BASE = "https://api.football-data.org/v4"
 DEFAULT_DAYS = 10
 MAX_DAILY_PICKS = 10
 
-FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL", "WC"]
+PRIORITY_COMPETITIONS = ["WC", "CL", "EL", "PL", "PD", "BL1", "SA", "FL1"]
+ALL_FREE_COMPETITIONS = ["WC", "CL", "EL", "PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL"]
 
 COMPETITION_LABELS = {
+    "WC": {"bg": "Световно първенство", "en": "World Cup"},
+    "CL": {"bg": "Шампионска лига", "en": "Champions League"},
+    "EL": {"bg": "Лига Европа", "en": "Europa League"},
     "PL": {"bg": "Премиър лийг", "en": "Premier League"},
     "PD": {"bg": "Ла Лига", "en": "La Liga"},
     "BL1": {"bg": "Бундеслига", "en": "Bundesliga"},
@@ -21,39 +25,94 @@ COMPETITION_LABELS = {
     "DED": {"bg": "Ередивизие", "en": "Eredivisie"},
     "BSA": {"bg": "Бразилска Серия A", "en": "Brasileirão Série A"},
     "PPL": {"bg": "Примейра Лига", "en": "Primeira Liga"},
-    "CL": {"bg": "Шампионска лига", "en": "Champions League"},
-    "EL": {"bg": "Лига Европа", "en": "Europa League"},
-    "WC": {"bg": "Световно първенство", "en": "World Cup"},
 }
 
 TEAM_TRANSLATIONS = {
     "bg": {
+        "Argentina": "Аржентина",
+        "Brazil": "Бразилия",
+        "England": "Англия",
+        "France": "Франция",
+        "Germany": "Германия",
+        "Spain": "Испания",
+        "Portugal": "Португалия",
+        "Italy": "Италия",
+        "Netherlands": "Нидерландия",
+        "Belgium": "Белгия",
+        "Croatia": "Хърватия",
+        "Uruguay": "Уругвай",
+        "USA": "САЩ",
+        "Mexico": "Мексико",
+        "Morocco": "Мароко",
+        "Japan": "Япония",
+        "Korea Republic": "Южна Корея",
+        "Saudi Arabia": "Саудитска Арабия",
+        "Qatar": "Катар",
+        "Senegal": "Сенегал",
+        "Cameroon": "Камерун",
+        "Canada": "Канада",
+        "Switzerland": "Швейцария",
+        "Poland": "Полша",
+        "Denmark": "Дания",
+        "Austria": "Австрия",
+        "Czech Republic": "Чехия",
+        "Ukraine": "Украйна",
+        "Serbia": "Сърбия",
+        "Turkey": "Турция",
+        "Romania": "Румъния",
+        "Scotland": "Шотландия",
+        "Wales": "Уелс",
+        "Slovakia": "Словакия",
+        "Hungary": "Унгария",
+        "Greece": "Гърция",
+        "Norway": "Норвегия",
+        "Sweden": "Швеция",
+        "Finland": "Финландия",
+        "Chile": "Чили",
+        "Colombia": "Колумбия",
+        "Ecuador": "Еквадор",
+        "Peru": "Перу",
+        "Paraguay": "Парагвай",
+        "Costa Rica": "Коста Рика",
+        "Panama": "Панама",
+        "New Zealand": "Нова Зеландия",
+        "Australia": "Австралия",
+        "Algeria": "Алжир",
+        "Tunisia": "Тунис",
+        "Egypt": "Египет",
+        "Nigeria": "Нигерия",
+        "Ghana": "Гана",
+        "South Africa": "Южна Африка",
+        "Saudi Arabia": "Саудитска Арабия",
+        "United Arab Emirates": "Обединени арабски емирства",
         "Real Madrid": "Реал Мадрид",
         "Barcelona": "Барселона",
         "Atletico Madrid": "Атлетико Мадрид",
+        "Sevilla": "Севиля",
         "Bayern Munich": "Байерн Мюнхен",
         "Borussia Dortmund": "Борусия Дортмунд",
-        "Inter Milan": "Интер",
-        "AC Milan": "Милан",
-        "Juventus": "Ювентус",
+        "RB Leipzig": "РБ Лайпциг",
+        "Bayer Leverkusen": "Байер Леверкузен",
         "Manchester City": "Манчестър Сити",
         "Manchester United": "Манчестър Юнайтед",
         "Liverpool": "Ливърпул",
         "Arsenal": "Арсенал",
         "Chelsea": "Челси",
         "Tottenham Hotspur": "Тотнъм",
+        "Inter Milan": "Интер",
+        "AC Milan": "Милан",
+        "Juventus": "Ювентус",
+        "Napoli": "Наполи",
+        "Roma": "Рома",
         "Paris Saint-Germain": "Пари Сен Жермен",
         "Marseille": "Марсилия",
         "Lyon": "Лион",
-        "Porto": "Порто",
         "Benfica": "Бенфика",
+        "Porto": "Порто",
         "Sporting CP": "Спортинг",
-        "Brazil": "Бразилия",
-        "Argentina": "Аржентина",
-        "Spain": "Испания",
-        "France": "Франция",
-        "Germany": "Германия",
-        "England": "Англия",
+        "Ajax": "Аякс",
+        "PSV Eindhoven": "ПСВ Айндховен",
+        "Feyenoord": "Фейенорд",
     }
 }
 
@@ -75,15 +134,13 @@ UI = {
         "table_view": "Табличен изглед",
         "view": "Изглед",
         "info": "Инфо",
-        "summary": "Резюме",
-        "recommended": "Препоръчани",
-        "best_bets": "Най-сигурни",
         "markets": "Пазари",
         "picks_limit": "Брой прогнози за деня",
         "top_day": "Най-важните мачове за деня",
         "status": "Статус",
         "forecast": "Прогноза",
         "confidence": "Шанс",
+        "browser_tz": "Браузърна часова зона",
         "match": "Мач",
     },
     "en": {
@@ -98,28 +155,19 @@ UI = {
         "table_view": "Table view",
         "view": "View",
         "info": "Info",
-        "summary": "Summary",
-        "recommended": "Recommended",
-        "best_bets": "Safest",
         "markets": "Markets",
         "picks_limit": "Daily prediction limit",
         "top_day": "Most important matches today",
         "status": "Status",
         "forecast": "Forecast",
         "confidence": "Confidence",
+        "browser_tz": "Browser timezone",
         "match": "Match",
     },
 }
 
-COMPETITION_WEIGHTS = {
-    "WC": 105, "CL": 100, "EL": 92, "PL": 95, "PD": 94, "BL1": 92,
-    "SA": 91, "FL1": 88, "DED": 84, "BSA": 83, "PPL": 82
-}
-
-STATUS_WEIGHTS = {
-    "LIVE": 55, "IN_PLAY": 55, "PAUSED": 45, "TIMED": 25, "SCHEDULED": 25,
-    "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0
-}
+COMPETITION_WEIGHTS = {"WC": 105, "CL": 100, "EL": 94, "PL": 96, "PD": 95, "BL1": 93, "SA": 92, "FL1": 90, "DED": 82, "BSA": 80, "PPL": 81}
+STATUS_WEIGHTS = {"LIVE": 55, "IN_PLAY": 55, "PAUSED": 45, "TIMED": 25, "SCHEDULED": 25, "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0}
 
 
 def ui():
@@ -154,6 +202,10 @@ def parse_utc(v):
     return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
 
 
+def browser_tz():
+    return st.context.timezone or "UTC"
+
+
 def fmt_dt(dt):
     if not dt:
         return ""
@@ -172,8 +224,16 @@ def fetch_competitions():
 
 def load_competitions():
     available = fetch_competitions()
-    codes = [c["code"] for c in available if c.get("code") in FREE_COMPETITIONS]
-    return list(dict.fromkeys(codes or FREE_COMPETITIONS))
+    codes = [c["code"] for c in available if c.get("code") in ALL_FREE_COMPETITIONS()]
+    ordered = [c for c in PRIORITY_COMPETITIONS if c in codes]
+    return ordered or PRIORITY_COMPETITIONS[:]
+
+
+def ALL_FREE_COMPETITIONS():
+    return ALL_FREE_COMPETITIONS_LIST
+
+
+ALL_FREE_COMPETITIONS_LIST = ALL_FREE_COMPETITIONS
 
 
 def fetch_matches_for_competition(code):
@@ -250,39 +310,83 @@ def enrich(matches):
         m["confidence"] = round(max(probs.values()) * 100, 1)
         m["markets"] = safe_markets(m)
         out.append(m)
-    return sorted(out, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
+    return sorted(out, key=lambda x: (x["competitionCode"] in PRIORITY_COMPETITIONS, x["confidence"], x["importance"]), reverse=True)
 
 
-def league_header(code):
-    return f"<div style='font-size:0.9rem;color:#8dd3ff;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;margin:8px 0 2px 0;'>{comp_name(code)}</div>"
+def language_button():
+    current = st.session_state.get("lang", "bg")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stSelectbox"] {
+            width: 56px !important;
+        }
+        div[data-baseweb="select"] > div {
+            width: 56px !important;
+            min-height: 56px !important;
+            height: 56px !important;
+            border-radius: 999px !important;
+            padding-left: 0.2rem !important;
+            padding-right: 0.2rem !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        div[data-baseweb="select"] span {
+            font-size: 1.25rem !important;
+            line-height: 1 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    choice = st.selectbox(
+        " ",
+        ["bg", "en"],
+        index=0 if current == "bg" else 1,
+        format_func=lambda x: LANGS[x]["flag"],
+        label_visibility="collapsed",
+        key="lang_selector",
+    )
+    st.session_state.lang = choice
 
 
-def scale_html(m):
-    p1, px, p2 = m["probs"]["1"] * 100, m["probs"]["X"] * 100, m["probs"]["2"] * 100
-    return f"""
-    <div style='width:360px; max-width:100%; margin:0 0 8px 0;'>
-      <div style='display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-bottom:4px;'>
-        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>1</div>
-        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>X</div>
-        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>2</div>
-      </div>
-      <div style='display:grid; grid-template-columns:repeat(3, 1fr); height:26px; border-radius:999px; overflow:hidden; box-shadow:0 0 0 1px rgba(255,255,255,0.08) inset;'>
-        <div style='background:linear-gradient(90deg,#0dbf6b 0%,#79f2b4 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{p1:.1f}%</span></div>
-        <div style='background:linear-gradient(90deg,#9a9a9a 0%,#d9d9d9 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{px:.1f}%</span></div>
-        <div style='background:linear-gradient(90deg,#ff5b5b 0%,#ff9b9b 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{p2:.1f}%</span></div>
-      </div>
-    </div>
-    """
+def render_scale(m):
+    p1 = m["probs"]["1"] * 100
+    px = m["probs"]["X"] * 100
+    p2 = m["probs"]["2"] * 100
+    st.markdown(
+        f"""
+        <div style="width:260px; max-width:100%; margin:4px 0 0 0;">
+          <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; margin-bottom:4px; width:100%;">
+            <div style="text-align:center; font-size:0.82rem; font-weight:800; color:#8dd3ff;">1</div>
+            <div style="text-align:center; font-size:0.82rem; font-weight:800; color:#8dd3ff;">X</div>
+            <div style="text-align:center; font-size:0.82rem; font-weight:800; color:#8dd3ff;">2</div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:0; height:22px; border-radius:999px; overflow:hidden; width:100%;">
+            <div style="background:linear-gradient(90deg,#0dbf6b 0%,#79f2b4 100%); display:flex; align-items:center; justify-content:center;">
+              <span style="color:#000;font-weight:900;font-size:0.82rem;">{p1:.1f}%</span>
+            </div>
+            <div style="background:linear-gradient(90deg,#9a9a9a 0%,#d9d9d9 100%); display:flex; align-items:center; justify-content:center;">
+              <span style="color:#000;font-weight:900;font-size:0.82rem;">{px:.1f}%</span>
+            </div>
+            <div style="background:linear-gradient(90deg,#ff5b5b 0%,#ff9b9b 100%); display:flex; align-items:center; justify-content:center;">
+              <span style="color:#000;font-weight:900;font-size:0.82rem;">{p2:.1f}%</span>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_match(m):
     dt = parse_utc(m["utcDate"])
-    st.markdown(league_header(m["competitionCode"]), unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.85rem;color:#8dd3ff;font-weight:800;text-transform:uppercase;'>{m['competitionCode']} · {m['competitionLabel']}</div>", unsafe_allow_html=True)
     st.markdown(f"### {tr_team(m['homeTeam'])} vs {tr_team(m['awayTeam'])}")
     st.markdown(f"**{fmt_dt(dt)}** · {m['status']}")
-    c1, c2 = st.columns([1.2, 1])
+    c1, c2 = st.columns([1.1, 1])
     with c1:
-        st.markdown(scale_html(m), unsafe_allow_html=True)
+        render_scale(m)
     with c2:
         st.markdown(f"**{ui()['forecast']}:** {m['pred1x2']}\n\n**{ui()['confidence']}:** {m['confidence']}%")
     with st.expander(ui()["info"]):
@@ -312,19 +416,6 @@ def df_view(matches):
     return pd.DataFrame(rows)
 
 
-def language_button():
-    current = st.session_state.get("lang", "bg")
-    choice = st.selectbox(
-        " ",
-        ["bg", "en"],
-        index=0 if current == "bg" else 1,
-        format_func=lambda x: f"{LANGS[x]['flag']}  {LANGS[x]['label']}",
-        label_visibility="collapsed",
-        key="lang_selector",
-    )
-    st.session_state.lang = choice
-
-
 def main():
     st.set_page_config(page_title="Football Intelligence", layout="wide")
     st.markdown(
@@ -332,14 +423,8 @@ def main():
         <style>
         .stApp{background:#0d0b16;color:#f5f0ff;}
         h1,h2,h3,h4{color:#c79cff !important;}
-        div[data-baseweb='select'] > div{
-            border-radius:14px !important;
-            min-height:34px !important;
-            height:34px !important;
-            width:84px !important;
-        }
-        div[data-baseweb='select'] span{
-            font-size:0.88rem !important;
+        div[data-baseweb="select"] > div {
+            border-radius:999px !important;
         }
         </style>
         """,
@@ -348,11 +433,6 @@ def main():
 
     if "lang" not in st.session_state:
         st.session_state.lang = "bg"
-
-    components.html(
-        "<script>window.parent.postMessage(JSON.stringify({timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'}),'*');</script>",
-        height=0,
-    )
 
     c1, c2 = st.columns([4, 1])
     with c1:
@@ -365,6 +445,10 @@ def main():
         codes = load_competitions()
         raw = load_all_matches(codes)
         matches = enrich(raw)
+
+        if not matches:
+            st.info("Няма налични мачове за избраните приоритетни лиги в момента.")
+            return
 
         code_to_label = {c: comp_name(c) for c in codes}
         league_choice = st.selectbox(
@@ -381,14 +465,8 @@ def main():
 
         top = filtered[:3]
         today_utc = datetime.now(timezone.utc).date()
-        daily = [
-            m for m in filtered
-            if parse_utc(m["utcDate"]) and parse_utc(m["utcDate"]).date() == today_utc
-        ]
-        weekly = [
-            m for m in filtered
-            if parse_utc(m["utcDate"]) and today_utc <= parse_utc(m["utcDate"]).date() <= today_utc + timedelta(days=7)
-        ]
+        daily = [m for m in filtered if parse_utc(m["utcDate"]) and parse_utc(m["utcDate"]).date() == today_utc]
+        weekly = [m for m in filtered if parse_utc(m["utcDate"]) and today_utc <= parse_utc(m["utcDate"]).date() <= today_utc + timedelta(days=7)]
 
         st.subheader(ui()["top_predictions"])
         for m in top:
