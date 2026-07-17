@@ -7,7 +7,7 @@ import streamlit as st
 
 API_BASE = "https://api.football-data.org/v4"
 FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL"]
-DEFAULT_DATE_DAYS = 7
+DEFAULT_DAYS = 7
 
 COMPETITION_WEIGHTS = {
     "PL": 100,
@@ -99,41 +99,43 @@ def compute_importance(m):
 
 
 def enrich_matches(matches):
-    enriched = []
+    out = []
     for match in matches:
         item = normalize_match(match)
         item["importance"] = compute_importance(item)
-        enriched.append(item)
-    return sorted(enriched, key=lambda x: x["importance"], reverse=True)
+        out.append(item)
+    return sorted(out, key=lambda x: x["importance"], reverse=True)
 
 
 def fetch_competitions():
     try:
         data = api_get("/competitions")
-        comps = data.get("competitions", [])
-        return [c for c in comps if c.get("code")]
+        return [c for c in data.get("competitions", []) if c.get("code")]
     except Exception:
         return []
 
 
-def fetch_competition_matches(code, days=DEFAULT_DATE_DAYS):
+def fetch_competition_matches(code, days=DEFAULT_DAYS):
     try:
         today = datetime.now(timezone.utc).date()
-        date_from = today.isoformat()
-        date_to = (today + timedelta(days=days)).isoformat()
-        data = api_get(f"/competitions/{code}/matches", params={"dateFrom": date_from, "dateTo": date_to})
+        params = {"dateFrom": today.isoformat(), "dateTo": (today + timedelta(days=days)).isoformat()}
+        data = api_get(f"/competitions/{code}/matches", params=params)
         return data.get("matches", [])
     except Exception:
         return []
 
 
-def load_all_matches():
-    competitions = fetch_competitions()
-    allowed = {c["code"] for c in competitions if c.get("code") in FREE_COMPETITIONS}
+def load_competitions_to_use():
+    available = fetch_competitions()
+    codes = {c.get("code") for c in available if c.get("code") in FREE_COMPETITIONS}
+    if not codes:
+        codes = set(FREE_COMPETITIONS)
+    return sorted(codes)
+
+
+def load_all_matches(selected_codes):
     all_matches = []
-    for code in FREE_COMPETITIONS:
-        if code not in allowed:
-            continue
+    for code in selected_codes:
         all_matches.extend(fetch_competition_matches(code))
     return all_matches
 
@@ -141,8 +143,7 @@ def load_all_matches():
 def split_by_date(matches):
     today = datetime.now(timezone.utc).date()
     week_end = today + timedelta(days=7)
-    daily = []
-    weekly = []
+    daily, weekly = [], []
     for m in matches:
         dt = parse_utc(m.get("utcDate"))
         if not dt:
@@ -189,7 +190,8 @@ def main():
     st.caption("Data provider: football-data.org")
 
     try:
-        raw_matches = load_all_matches()
+        selected_codes = load_competitions_to_use()
+        raw_matches = load_all_matches(selected_codes)
         enriched = enrich_matches(raw_matches)
         daily, weekly = split_by_date(enriched)
 
@@ -197,6 +199,16 @@ def main():
         c1.metric("Total matches", len(enriched))
         c2.metric("Today", len(daily))
         c3.metric("This week", len(weekly))
+
+        st.subheader("Competition filter")
+        active_codes = st.multiselect(
+            "Competitions",
+            options=selected_codes,
+            default=selected_codes,
+        )
+
+        active_matches = [m for m in enriched if m.get("competitionCode") in active_codes]
+        daily, weekly = split_by_date(active_matches)
 
         st.subheader("Top matches for today")
         daily_limit = st.slider("Daily limit", 1, 20, 5)
@@ -210,12 +222,11 @@ def main():
 
         st.subheader("Table view")
         view = st.selectbox("View", ["Daily", "Weekly", "All"])
-        chosen = daily if view == "Daily" else weekly if view == "Weekly" else enriched
+        chosen = daily if view == "Daily" else weekly if view == "Weekly" else active_matches
         st.dataframe(matches_to_df(chosen), use_container_width=True)
 
         st.subheader("Competition details")
-        st.write("Free competitions used:")
-        st.write(", ".join(FREE_COMPETITIONS))
+        st.write(", ".join(selected_codes))
 
     except Exception as e:
         st.error(f"Failed to load matches: {e}")
