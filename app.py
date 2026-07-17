@@ -1,63 +1,17 @@
 import os
+import json
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 API_BASE = "https://api.football-data.org/v4"
-DEFAULT_DAYS = 7
+DEFAULT_DAYS = 10
 MAX_DAILY_PICKS = 10
 
-LABELS_BG = {
-    "app_title": "Football Intelligence",
-    "subtitle": "Платформа за прогнозиране на футболни срещи",
-    "language": "Език",
-    "language_bg": "Български",
-    "language_en": "Английски",
-    "time_mode": "Часова зона",
-    "time_bg": "Българско време",
-    "time_local": "Локално време",
-    "competition_filter": "Лиги",
-    "all_leagues": "Всички лиги",
-    "top_predictions": "Топ предложения",
-    "today": "Днес",
-    "week": "Тази седмица",
-    "table_view": "Табличен изглед",
-    "view": "Изглед",
-    "info": "Инфо",
-    "summary": "Резюме",
-    "recommended": "Препоръчани",
-    "best_bets": "Най-сигурни",
-    "markets": "Пазари",
-    "picks_limit": "Брой прогнози за деня",
-    "top_day": "Най-важните мачове за деня",
-}
-
-LABELS_EN = {
-    "app_title": "Football Intelligence",
-    "subtitle": "Football match prediction platform",
-    "language": "Language",
-    "language_bg": "Bulgarian",
-    "language_en": "English",
-    "time_mode": "Time zone",
-    "time_bg": "Bulgarian time",
-    "time_local": "Local time",
-    "competition_filter": "Leagues",
-    "all_leagues": "All leagues",
-    "top_predictions": "Top predictions",
-    "today": "Today",
-    "week": "This week",
-    "table_view": "Table view",
-    "view": "View",
-    "info": "Info",
-    "summary": "Summary",
-    "recommended": "Recommended",
-    "best_bets": "Safest",
-    "markets": "Markets",
-    "picks_limit": "Daily prediction limit",
-    "top_day": "Most important matches today",
-}
+FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL", "WC"]
 
 COMPETITION_LABELS = {
     "PL": {"bg": "Премиър лийг", "en": "Premier League"},
@@ -66,42 +20,88 @@ COMPETITION_LABELS = {
     "SA": {"bg": "Серия А", "en": "Serie A"},
     "FL1": {"bg": "Лига 1", "en": "Ligue 1"},
     "DED": {"bg": "Ередивизие", "en": "Eredivisie"},
-    "BSA": {"bg": "Кампеонато Бразилейро Сериа А", "en": "Campeonato Brasileiro Série A"},
+    "BSA": {"bg": "Бразилска Серия A", "en": "Brasileirão Série A"},
     "PPL": {"bg": "Примейра Лига", "en": "Primeira Liga"},
     "CL": {"bg": "Шампионска лига", "en": "Champions League"},
     "EL": {"bg": "Лига Европа", "en": "Europa League"},
     "WC": {"bg": "Световно първенство", "en": "World Cup"},
 }
 
-FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL", "WC"]
-COMPETITION_WEIGHTS = {"PL": 100, "PD": 96, "BL1": 94, "SA": 92, "FL1": 90, "DED": 84, "BSA": 82, "PPL": 80, "CL": 98, "EL": 88, "WC": 99}
-STATUS_WEIGHTS = {"LIVE": 50, "IN_PLAY": 50, "PAUSED": 45, "TIMED": 20, "SCHEDULED": 20, "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0}
+LANGS = {
+    "bg": {"flag": "🇧🇬", "label": "Български"},
+    "en": {"flag": "🇬🇧", "label": "English"},
+}
+
+UI = {
+    "bg": {
+        "title": "Football Intelligence",
+        "subtitle": "Платформа за прогнозиране на футболни срещи",
+        "language": "Език",
+        "leagues": "Лиги",
+        "all_leagues": "Всички лиги",
+        "top_predictions": "Топ предложения",
+        "today": "Днес",
+        "week": "Тази седмица",
+        "table_view": "Табличен изглед",
+        "view": "Изглед",
+        "info": "Инфо",
+        "summary": "Резюме",
+        "recommended": "Препоръчани",
+        "best_bets": "Най-сигурни",
+        "markets": "Пазари",
+        "picks_limit": "Брой прогнози за деня",
+        "top_day": "Най-важните мачове за деня",
+        "status": "Статус",
+        "forecast": "Прогноза",
+        "confidence": "Шанс",
+        "timezone": "Часова зона",
+        "browser_tz": "Браузърна зона",
+        "utc_tz": "UTC",
+    },
+    "en": {
+        "title": "Football Intelligence",
+        "subtitle": "Football match prediction platform",
+        "language": "Language",
+        "leagues": "Leagues",
+        "all_leagues": "All leagues",
+        "top_predictions": "Top predictions",
+        "today": "Today",
+        "week": "This week",
+        "table_view": "Table view",
+        "view": "View",
+        "info": "Info",
+        "summary": "Summary",
+        "recommended": "Recommended",
+        "best_bets": "Safest",
+        "markets": "Markets",
+        "picks_limit": "Daily prediction limit",
+        "top_day": "Most important matches today",
+        "status": "Status",
+        "forecast": "Forecast",
+        "confidence": "Confidence",
+        "timezone": "Timezone",
+        "browser_tz": "Browser zone",
+        "utc_tz": "UTC",
+    },
+}
+
+COMPETITION_WEIGHTS = {
+    "WC": 105, "CL": 100, "EL": 92, "PL": 95, "PD": 94, "BL1": 92,
+    "SA": 91, "FL1": 88, "DED": 84, "BSA": 83, "PPL": 82
+}
+
+STATUS_WEIGHTS = {
+    "LIVE": 55, "IN_PLAY": 55, "PAUSED": 45, "TIMED": 25, "SCHEDULED": 25,
+    "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0
+}
 
 
-def lang():
-    return st.session_state.get("lang", "bg")
-
-
-def t(key):
-    return LABELS_BG.get(key, key) if lang() == "bg" else LABELS_EN.get(key, key)
+def ui():
+    return UI[st.session_state.get("lang", "bg")]
 
 
 def comp_name(code):
-    data = COMPETITION_LABELS.get(code, {"bg": code, "en": code})
-    return data["bg"] if lang() == "bg" else data["en"]
-
-
-def bg_time(dt):
-    return dt.astimezone(timezone(timedelta(hours=3))).strftime("%H:%M · %d.%m.%Y") if dt else ""
-
-
-def local_time(dt):
-    return dt.astimezone().strftime("%H:%M · %d.%m.%Y") if dt else ""
-
-
-def fmt_dt(dt):
-    mode = st.session_state.get("time_mode", "bg")
-    return bg_time(dt) if mode == "bg" else local_time(dt)
+    return COMPETITION_LABELS.get(code, {}).get(st.session_state.get("lang", "bg"), code)
 
 
 def get_api_key():
@@ -124,20 +124,40 @@ def parse_utc(v):
     return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
 
 
+def browser_timezone():
+    try:
+        tz = st.context.get("timezone", None)
+        if tz:
+            return tz
+    except Exception:
+        pass
+    return st.session_state.get("browser_tz", "UTC")
+
+
+def detect_browser_timezone():
+    html = """
+    <script>
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const msg = JSON.stringify({timezone: tz});
+    window.parent.postMessage(msg, "*");
+    </script>
+    """
+    components.html(html, height=0)
+
+
+def fmt_dt(dt):
+    if not dt:
+        return ""
+    tz_name = browser_timezone()
+    try:
+        return dt.astimezone().astimezone(timezone.utc).astimezone().strftime("%H:%M · %d.%m.%Y") if tz_name == "UTC" else dt.astimezone().strftime("%H:%M · %d.%m.%Y")
+    except Exception:
+        return dt.astimezone().strftime("%H:%M · %d.%m.%Y")
+
+
 def fetch_competitions():
     try:
-        data = api_get("/competitions")
-        return [c for c in data.get("competitions", []) if c.get("code")]
-    except Exception:
-        return []
-
-
-def fetch_matches_for_competition(code):
-    try:
-        today = datetime.now(timezone.utc).date()
-        params = {"dateFrom": today.isoformat(), "dateTo": (today + timedelta(days=DEFAULT_DAYS)).isoformat()}
-        data = api_get(f"/competitions/{code}/matches", params=params)
-        return data.get("matches", [])
+        return api_get("/competitions").get("competitions", [])
     except Exception:
         return []
 
@@ -145,14 +165,16 @@ def fetch_matches_for_competition(code):
 def load_competitions():
     available = fetch_competitions()
     codes = [c["code"] for c in available if c.get("code") in FREE_COMPETITIONS]
-    if not codes:
-        codes = FREE_COMPETITIONS[:]
-    seen, out = set(), []
-    for c in codes:
-        if c not in seen:
-            out.append(c)
-            seen.add(c)
-    return out
+    return list(dict.fromkeys(codes or FREE_COMPETITIONS))
+
+
+def fetch_matches_for_competition(code):
+    today = datetime.now(timezone.utc).date()
+    params = {"dateFrom": today.isoformat(), "dateTo": (today + timedelta(days=DEFAULT_DAYS)).isoformat()}
+    try:
+        return api_get(f"/competitions/{code}/matches", params=params).get("matches", [])
+    except Exception:
+        return []
 
 
 def load_all_matches(codes):
@@ -182,7 +204,7 @@ def score_match(m):
     code = m["competitionCode"]
     status = m["status"]
     dt = parse_utc(m["utcDate"])
-    base = COMPETITION_WEIGHTS.get(code, 60) + STATUS_WEIGHTS.get(status, 10)
+    base = COMPETITION_WEIGHTS.get(code, 70) + STATUS_WEIGHTS.get(status, 10)
     time_bonus = 0
     if dt:
         hours = abs((dt - datetime.now(timezone.utc)).total_seconds()) / 3600
@@ -191,10 +213,10 @@ def score_match(m):
 
 
 def predict_1x2(m):
-    strength = COMPETITION_WEIGHTS.get(m["competitionCode"], 60) / 100
+    strength = COMPETITION_WEIGHTS.get(m["competitionCode"], 70) / 105
     total = score_match(m) / 140
-    home = max(0.18, min(0.62, 0.30 + 0.20 * strength + 0.12 * total))
-    draw = max(0.12, min(0.34, 0.24 - 0.05 * (strength - 0.5) + 0.03 * (1 - total)))
+    home = max(0.18, min(0.62, 0.30 + 0.18 * strength + 0.12 * total))
+    draw = max(0.12, min(0.34, 0.26 - 0.04 * (strength - 0.5) + 0.03 * (1 - total)))
     away = max(0.18, min(0.62, 1 - home - draw))
     s = home + draw + away
     probs = {"1": home / s, "X": draw / s, "2": away / s}
@@ -228,48 +250,34 @@ def enrich(matches):
     return sorted(out, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
 
 
-def color_bar(p1, px, p2):
-    return f"""
-    <div style="display:flex; height:16px; border-radius:999px; overflow:hidden; background:#3a3a3a; width:100%;">
-      <div style="width:{p1}%; background:linear-gradient(90deg,#19c37d,#7bffb8);"></div>
-      <div style="width:{px}%; background:linear-gradient(90deg,#9c9c9c,#cfcfcf);"></div>
-      <div style="width:{p2}%; background:linear-gradient(90deg,#ff5b5b,#ff8a8a);"></div>
-    </div>
-    """
-
-
-def render_scale(m):
+def compact_scale(m):
     p1 = m["probs"]["1"] * 100
     px = m["probs"]["X"] * 100
     p2 = m["probs"]["2"] * 100
-    c1 = "#19c37d"
-    cx = "#a8a8a8"
-    c2 = "#ff5b5b"
-    st.markdown(
-        f"""
-        <div style="display:flex; justify-content:space-between; font-size:0.95rem; margin-bottom:0.25rem;">
-          <span style="color:{c1}; font-weight:700;">1 {p1:.1f}%</span>
-          <span style="color:{cx}; font-weight:700;">X {px:.1f}%</span>
-          <span style="color:{c2}; font-weight:700;">2 {p2:.1f}%</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(color_bar(p1, px, p2), unsafe_allow_html=True)
+    cols = st.columns(3, gap="small")
+    with cols[0]:
+        st.markdown(f"<div style='text-align:center;font-weight:700;color:#19c37d;'>1 {p1:.1f}%</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#19c37d,#76f7b0);'></div>", unsafe_allow_html=True)
+    with cols[1]:
+        st.markdown(f"<div style='text-align:center;font-weight:700;color:#a8a8a8;'>X {px:.1f}%</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#a8a8a8,#dddddd);'></div>", unsafe_allow_html=True)
+    with cols[2]:
+        st.markdown(f"<div style='text-align:center;font-weight:700;color:#ff5b5b;'>2 {p2:.1f}%</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#ff5b5b,#ff9b9b);'></div>", unsafe_allow_html=True)
 
 
 def render_match(m):
     dt = parse_utc(m["utcDate"])
     st.markdown(f"### {m['homeTeam']} vs {m['awayTeam']}")
     st.markdown(f"**{fmt_dt(dt)}** · {m['status']}")
-    render_scale(m)
-    st.markdown(f"**Прогноза:** {m['pred1x2']} · **Шанс:** {m['confidence']}%")
-    with st.expander(t("info")):
+    compact_scale(m)
+    st.markdown(f"**{ui()['forecast']}:** {m['pred1x2']} · **{ui()['confidence']}:** {m['confidence']}%")
+    with st.expander(ui()["info"]):
         st.write(m["summary"])
         st.write(f"1/X/2: {m['probs']['1']*100:.1f}% / {m['probs']['X']*100:.1f}% / {m['probs']['2']*100:.1f}%")
-        st.write(f"{t('markets')}:")
-        st.write(f"- {t('best_bets')}: {m['markets']['safe']}%")
-        st.write(f"- {t('recommended')}: {m['markets']['combo']}%")
+        st.write(f"{ui()['markets']}:")
+        st.write(f"- {ui()['best_bets']}: {m['markets']['safe']}%")
+        st.write(f"- {ui()['recommended']}: {m['markets']['combo']}%")
         st.write(f"- Картони: {m['markets']['cards']}%")
         st.write(f"- Голове: {m['markets']['goals']}%")
         st.write(f"- Удари: {m['markets']['shots']}%")
@@ -291,24 +299,50 @@ def df_view(matches):
     return pd.DataFrame(rows)
 
 
+def language_button():
+    current = st.session_state.get("lang", "bg")
+    label = f"{LANGS[current]['flag']} {LANGS[current]['label']}"
+    choice = st.selectbox(
+        "Language",
+        ["bg", "en"],
+        index=0 if current == "bg" else 1,
+        format_func=lambda x: f"{LANGS[x]['flag']} {LANGS[x]['label']}",
+        label_visibility="collapsed",
+        key="lang_selector",
+    )
+    st.session_state.lang = choice
+
+
 def main():
     st.set_page_config(page_title="Football Intelligence", layout="wide")
-    st.markdown("<style>.stApp{background:#0d0b16;color:#f5f0ff;} h1,h2,h3,h4{color:#c79cff !important;}</style>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        .stApp{background:#0d0b16;color:#f5f0ff;}
+        h1,h2,h3,h4{color:#c79cff !important;}
+        div[data-baseweb="select"] > div{
+            border-radius:16px !important;
+            min-height:44px !important;
+        }
+        button[kind="secondary"]{
+            border-radius:16px !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if "lang" not in st.session_state:
         st.session_state.lang = "bg"
-    if "time_mode" not in st.session_state:
-        st.session_state.time_mode = "bg"
 
-    c1, c2, c3 = st.columns([2, 1, 1])
+    detect_browser_timezone()
+
+    c1, c2 = st.columns([4, 1])
     with c1:
-        st.title(t("app_title"))
-        st.caption(t("subtitle"))
+        st.title(ui()["title"])
+        st.caption(ui()["subtitle"])
     with c2:
-        st.session_state.lang = "bg" if st.selectbox(t("language"), ["BG", "EN"], index=0 if st.session_state.lang == "bg" else 1) == "BG" else "en"
-    with c3:
-        tm = st.selectbox(t("time_mode"), [t("time_bg"), t("time_local")], index=0 if st.session_state.time_mode == "bg" else 1)
-        st.session_state.time_mode = "bg" if tm == t("time_bg") else "local"
+        language_button()
 
     try:
         codes = load_competitions()
@@ -316,40 +350,47 @@ def main():
         matches = enrich(raw)
 
         code_to_label = {c: comp_name(c) for c in codes}
-        selection = st.selectbox(t("competition_filter"), [t("all_leagues")] + [code_to_label[c] for c in codes], index=0)
-        if selection == t("all_leagues"):
+        league_choice = st.selectbox(
+            ui()["leagues"],
+            [ui()["all_leagues"]] + [code_to_label[c] for c in codes],
+            index=0,
+        )
+
+        if league_choice == ui()["all_leagues"]:
             filtered = matches
         else:
-            chosen_code = next(c for c in codes if code_to_label[c] == selection)
+            chosen_code = next(c for c in codes if code_to_label[c] == league_choice)
             filtered = [m for m in matches if m["competitionCode"] == chosen_code]
 
         top = filtered[:3]
-        daily = [m for m in filtered if parse_utc(m["utcDate"]) and parse_utc(m["utcDate"]).date() == datetime.now(timezone.utc).date()]
-        weekly = [m for m in filtered if parse_utc(m["utcDate"]) and datetime.now(timezone.utc).date() <= parse_utc(m["utcDate"]).date() <= datetime.now(timezone.utc).date() + timedelta(days=7)]
+        today_utc = datetime.now(timezone.utc).date()
+        daily = [
+            m for m in filtered
+            if parse_utc(m["utcDate"]) and parse_utc(m["utcDate"]).date() == today_utc
+        ]
+        weekly = [
+            m for m in filtered
+            if parse_utc(m["utcDate"]) and today_utc <= parse_utc(m["utcDate"]).date() <= today_utc + timedelta(days=7)
+        ]
 
-        if not selection or selection == t("all_leagues"):
-            st.subheader(t("top_predictions"))
-            for m in top:
-                render_match(m)
-        else:
-            st.subheader(f"{selection}")
-            for m in filtered:
-                render_match(m)
-
-        st.subheader(t("top_day"))
+        st.subheader(ui()["top_predictions"])
         for m in top:
             render_match(m)
 
-        st.subheader(t("today"))
-        for m in daily[:st.slider(t("picks_limit"), 1, MAX_DAILY_PICKS, 10)]:
+        st.subheader(ui()["top_day"])
+        for m in top:
             render_match(m)
 
-        st.subheader(t("week"))
+        st.subheader(ui()["today"])
+        for m in daily[:st.slider(ui()["picks_limit"], 1, MAX_DAILY_PICKS, 10)]:
+            render_match(m)
+
+        st.subheader(ui()["week"])
         st.dataframe(df_view(weekly[:10]), use_container_width=True)
 
-        st.subheader(t("table_view"))
-        view = st.selectbox(t("view"), [t("top_predictions"), t("today"), t("week"), "All"])
-        chosen = top if view == t("top_predictions") else daily if view == t("today") else weekly if view == t("week") else filtered
+        st.subheader(ui()["table_view"])
+        view = st.selectbox(ui()["view"], [ui()["top_predictions"], ui()["today"], ui()["week"], "All"])
+        chosen = top if view == ui()["top_predictions"] else daily if view == ui()["today"] else weekly if view == ui()["week"] else filtered
         st.dataframe(df_view(chosen), use_container_width=True)
 
     except Exception as e:
