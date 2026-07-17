@@ -76,13 +76,8 @@ COMPETITION_LABELS = {
     "WC": {"bg": "Световно първенство", "en": "World Cup"},
 }
 
-COMPETITION_WEIGHTS = {
-    "PL": 100, "PD": 96, "BL1": 94, "SA": 92, "FL1": 90, "DED": 84, "BSA": 82, "PPL": 80, "CL": 98, "EL": 88, "WC": 99
-}
-
-STATUS_WEIGHTS = {
-    "LIVE": 50, "IN_PLAY": 50, "PAUSED": 45, "TIMED": 20, "SCHEDULED": 20, "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0
-}
+COMPETITION_WEIGHTS = {"PL": 100, "PD": 96, "BL1": 94, "SA": 92, "FL1": 90, "DED": 84, "BSA": 82, "PPL": 80, "CL": 98, "EL": 88, "WC": 99}
+STATUS_WEIGHTS = {"LIVE": 50, "IN_PLAY": 50, "PAUSED": 45, "TIMED": 20, "SCHEDULED": 20, "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0}
 
 
 def get_lang():
@@ -90,25 +85,20 @@ def get_lang():
 
 
 def t(key):
-    lang = get_lang()
-    return LABELS_BG.get(key, key) if lang == "bg" else LABELS_EN.get(key, key)
+    return LABELS_BG.get(key, key) if get_lang() == "bg" else LABELS_EN.get(key, key)
 
 
 def comp_name(code):
-    lang = get_lang()
     data = COMPETITION_LABELS.get(code, {"bg": code, "en": code})
-    return data["bg"] if lang == "bg" else data["en"]
+    return data["bg"] if get_lang() == "bg" else data["en"]
 
 
 def fmt_dt(dt, timezone_mode="bg"):
     if not dt:
         return ""
     if timezone_mode == "local":
-        local = dt.astimezone()
-        return local.strftime("%H:%M · %d.%m.%Y")
-    bg_tz = timezone(timedelta(hours=3))
-    bg = dt.astimezone(bg_tz)
-    return bg.strftime("%H:%M · %d.%m.%Y")
+        return dt.astimezone().strftime("%H:%M · %d.%m.%Y")
+    return dt.astimezone(timezone(timedelta(hours=3))).strftime("%H:%M · %d.%m.%Y")
 
 
 def get_api_key():
@@ -162,13 +152,19 @@ def load_competitions_to_use():
     codes = [c.get("code") for c in available if c.get("code") in FREE_COMPETITIONS]
     if not codes:
         codes = FREE_COMPETITIONS[:]
-    seen = set()
-    out = []
+    seen, out = set(), []
     for c in codes:
         if c not in seen:
             out.append(c)
             seen.add(c)
     return out
+
+
+def load_all_matches(selected_codes):
+    all_matches = []
+    for code in selected_codes:
+        all_matches.extend(fetch_competition_matches(code))
+    return all_matches
 
 
 def normalize_match(match):
@@ -185,7 +181,6 @@ def normalize_match(match):
         "status": match.get("status", ""),
         "scoreHome": full_time.get("home"),
         "scoreAway": full_time.get("away"),
-        "raw": match,
     }
 
 
@@ -193,14 +188,10 @@ def compute_scores(m):
     code = (m.get("competitionCode") or "").upper()
     status = (m.get("status") or "").upper()
     dt = parse_utc(m.get("utcDate"))
-    base = COMPETITION_WEIGHTS.get(code, 60)
-    status_bonus = STATUS_WEIGHTS.get(status, 10)
-    time_bonus = 0
+    total = COMPETITION_WEIGHTS.get(code, 60) + STATUS_WEIGHTS.get(status, 10)
     if dt:
-        now = datetime.now(timezone.utc)
-        delta_hours = abs((dt - now).total_seconds()) / 3600
-        time_bonus = max(0, 24 - min(delta_hours, 24))
-    total = base + status_bonus + time_bonus
+        delta_hours = abs((dt - datetime.now(timezone.utc)).total_seconds()) / 3600
+        total += max(0, 24 - min(delta_hours, 24))
     return round(total, 2)
 
 
@@ -212,38 +203,27 @@ def predict_1x2(m):
     draw = max(0.12, min(0.34, 0.24 - 0.05 * (strength - 0.5) + 0.03 * (1 - total)))
     away = max(0.18, min(0.62, 1 - home - draw))
     s = home + draw + away
-    home, draw, away = home / s, draw / s, away / s
-    vals = {"1": home, "X": draw, "2": away}
+    vals = {"1": home / s, "X": draw / s, "2": away / s}
     best = max(vals, key=vals.get)
-    sorted_vals = sorted(vals.items(), key=lambda x: x[1], reverse=True)
-    second = sorted_vals[1][0]
-    third = sorted_vals[2][0]
-    return best, vals, second, third
+    return best, vals
 
 
 def market_signals(m):
     total = compute_scores(m)
-    safe = min(92, max(55, total - 20))
-    combo = min(96, max(60, safe + 6))
-    cards = min(85, max(50, 62 + (total - 100) / 2))
-    goals = min(88, max(48, 60 + (total - 100) / 3))
-    shots = min(84, max(45, 58 + (total - 100) / 4))
     return {
-        "safe": round(safe, 1),
-        "combo": round(combo, 1),
-        "cards": round(cards, 1),
-        "goals": round(goals, 1),
-        "shots": round(shots, 1),
+        "safe": round(min(92, max(55, total - 20)), 1),
+        "combo": round(min(96, max(60, total - 14)), 1),
+        "cards": round(min(85, max(50, 62 + (total - 100) / 2)), 1),
+        "goals": round(min(88, max(48, 60 + (total - 100) / 3)), 1),
+        "shots": round(min(84, max(45, 58 + (total - 100) / 4)), 1),
     }
 
 
-def build_summary(m, pred, vals):
-    lang = get_lang()
+def build_summary(m, pred):
     home = m.get("homeTeam", "")
     away = m.get("awayTeam", "")
-    dt = parse_utc(m.get("utcDate"))
-    when = fmt_dt(dt, st.session_state.get("time_mode", "bg"))
-    if lang == "bg":
+    when = fmt_dt(parse_utc(m.get("utcDate")), st.session_state.get("time_mode", "bg"))
+    if get_lang() == "bg":
         return f"{m.get('competitionLabel', '')}: {home} срещу {away} на {when}. Прогноза: {pred}."
     return f"{m.get('competitionLabel', '')}: {home} vs {away} at {when}. Prediction: {pred}."
 
@@ -253,33 +233,21 @@ def enrich_matches(matches):
     for match in matches:
         m = normalize_match(match)
         m["importance"] = compute_scores(m)
-        pred, vals, second, third = predict_1x2(m)
+        pred, vals = predict_1x2(m)
         m["pred1x2"] = pred
         m["probs"] = vals
-        m["second_pick"] = second
-        m["third_pick"] = third
-        m["safe_markets"] = market_signals(m)
         m["confidence"] = round(max(vals.values()) * 100, 1)
-        m["summary"] = build_summary(m, pred, vals)
+        m["safe_markets"] = market_signals(m)
+        m["summary"] = build_summary(m, pred)
         out.append(m)
     return sorted(out, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
-
-
-def group_by_competition(matches):
-    grouped = {}
-    for m in matches:
-        grouped.setdefault(m["competitionCode"], []).append(m)
-    for code in grouped:
-        grouped[code] = sorted(grouped[code], key=lambda x: (x["confidence"], x["importance"]), reverse=True)
-    return grouped
 
 
 def matches_to_df(matches):
     rows = []
     for m in matches:
-        dt = parse_utc(m.get("utcDate"))
         rows.append({
-            "Време": fmt_dt(dt, st.session_state.get("time_mode", "bg")),
+            "Време": fmt_dt(parse_utc(m.get("utcDate")), st.session_state.get("time_mode", "bg")),
             "Лига": m.get("competitionLabel", ""),
             "Домакин": m.get("homeTeam", ""),
             "Гост": m.get("awayTeam", ""),
@@ -288,14 +256,6 @@ def matches_to_df(matches):
             "Статус": m.get("status", ""),
         })
     return pd.DataFrame(rows)
-
-
-def color_for_pick(pick, best):
-    if pick == best:
-        return "🟢"
-    if pick == "X":
-        return "⚪"
-    return "🔴"
 
 
 def render_prediction_scale(m):
@@ -328,16 +288,7 @@ def render_match_card(m):
 
 def main():
     st.set_page_config(page_title="Football Intelligence", layout="wide")
-    st.markdown(
-        """
-        <style>
-        .stApp { background-color: #0d0b16; color: #f4f0ff; }
-        h1, h2, h3, h4 { color: #c79cff !important; }
-        .stMetric { background: #1a102b; border: 1px solid #7b3fe4; border-radius: 14px; padding: 10px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("""<style>.stApp{background-color:#0d0b16;color:#f4f0ff;} h1,h2,h3,h4{color:#c79cff !important;}</style>""", unsafe_allow_html=True)
 
     if "lang" not in st.session_state:
         st.session_state.lang = "bg"
@@ -360,19 +311,11 @@ def main():
         raw_matches = load_all_matches(selected_codes)
         enriched = enrich_matches(raw_matches)
 
-        codes = [m["competitionCode"] for m in enriched]
-        unique_codes = []
-        for c in codes:
-            if c not in unique_codes:
-                unique_codes.append(c)
-
-        code_options = {f"{comp_name(c)} ({c})": c for c in unique_codes}
-        options = list(code_options.keys())
-        default_options = options[:]
-
+        code_to_label = {c: comp_name(c) for c in selected_codes}
+        options = [f"{code_to_label[c]} ({c})" for c in selected_codes]
         st.subheader(t("competition_filter"))
-        chosen_labels = st.multiselect(t("competitions"), options=options, default=default_options)
-        chosen_codes = {code_options[label] for label in chosen_labels}
+        chosen_labels = st.multiselect(t("competitions"), options=options, default=options)
+        chosen_codes = {item.split("(")[-1].replace(")", "").strip() for item in chosen_labels}
 
         active_matches = [m for m in enriched if m.get("competitionCode") in chosen_codes]
         today = datetime.now(timezone.utc).date()
@@ -386,27 +329,25 @@ def main():
         c3.metric(t("week"), len(weekly))
         c4.metric(t("top_picks"), min(MAX_DAILY_PICKS, len(active_matches)))
 
-        grouped = group_by_competition(active_matches)
-
         st.subheader(t("top_predictions"))
-        top_predictions = sorted(active_matches, key=lambda x: (x["confidence"], x["importance"]), reverse=True)[:3]
+        top_predictions = active_matches[:3]
         for m in top_predictions:
             render_match_card(m)
 
         st.subheader(t("today"))
         daily_limit = st.slider(t("picks_limit"), 1, MAX_DAILY_PICKS, 10)
-        daily_sorted = sorted(daily, key=lambda x: (x["confidence"], x["importance"]), reverse=True)[:daily_limit]
-        for code in grouped:
-            section = [m for m in daily_sorted if m["competitionCode"] == code]
-            if section:
-                st.markdown(f"### {comp_name(code)}")
-                for m in section:
-                    render_match_card(m)
+        daily_sorted = daily[:daily_limit]
+        grouped = {}
+        for m in daily_sorted:
+            grouped.setdefault(m["competitionCode"], []).append(m)
+        for code, items in grouped.items():
+            st.markdown(f"### {comp_name(code)}")
+            for m in items:
+                render_match_card(m)
 
         st.subheader(t("week"))
-        weekly_sorted = sorted(weekly, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
         week_limit = st.slider("Weekly limit", 1, 20, 10)
-        st.dataframe(matches_to_df(weekly_sorted[:week_limit]), use_container_width=True)
+        st.dataframe(matches_to_df(weekly[:week_limit]), use_container_width=True)
 
         st.subheader(t("table_view"))
         view = st.selectbox(t("view"), [t("top_picks"), t("today"), t("week"), "All"])
@@ -415,9 +356,6 @@ def main():
 
         st.subheader("Препоръчваме")
         st.write(" | ".join([f"{m['homeTeam']} vs {m['awayTeam']} ({m['confidence']}%)" for m in top_predictions]))
-
-        st.subheader("Идеи за развитие")
-        st.write("1) Добавяне на реални новини и коментари. 2) Добавяне на коефициенти от free odds source. 3) Отделен модул за картони, корнери, голове и удари. 4) Исторически train data + backtesting.")
 
     except Exception as e:
         st.error(f"Грешка при зареждане на мачовете: {e}")
