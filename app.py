@@ -6,18 +6,8 @@ import requests
 import streamlit as st
 
 API_BASE = "https://api.football-data.org/v4"
-FREE_COMPETITIONS = [
-    "PL",
-    "PD",
-    "BL1",
-    "SA",
-    "FL1",
-    "DED",
-    "BSA",
-    "PPL",
-    "CL",
-    "EL",
-]
+FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL"]
+DEFAULT_DATE_DAYS = 7
 
 COMPETITION_WEIGHTS = {
     "PL": 100,
@@ -34,10 +24,13 @@ COMPETITION_WEIGHTS = {
 
 STATUS_WEIGHTS = {
     "LIVE": 50,
+    "IN_PLAY": 50,
+    "PAUSED": 45,
     "TIMED": 20,
     "SCHEDULED": 20,
     "FINISHED": 5,
     "POSTPONED": 0,
+    "SUSPENDED": 0,
     "CANCELLED": 0,
 }
 
@@ -93,19 +86,15 @@ def compute_importance(m):
     comp = (m.get("competitionCode") or "").upper()
     status = (m.get("status") or "").upper()
     dt = parse_utc(m.get("utcDate"))
-
     score = 0
     score += COMPETITION_WEIGHTS.get(comp, 60)
     score += STATUS_WEIGHTS.get(status, 10)
-
     if dt:
         now = datetime.now(timezone.utc)
         delta_hours = abs((dt - now).total_seconds()) / 3600
         score += max(0, 24 - min(delta_hours, 24))
-
     if m.get("scoreHome") is not None or m.get("scoreAway") is not None:
         score += 5
-
     return round(score, 2)
 
 
@@ -118,36 +107,42 @@ def enrich_matches(matches):
     return sorted(enriched, key=lambda x: x["importance"], reverse=True)
 
 
-def fetch_competition_matches(code):
+def fetch_competitions():
     try:
-        data = api_get(f"/competitions/{code}/matches")
+        data = api_get("/competitions")
+        comps = data.get("competitions", [])
+        return [c for c in comps if c.get("code")]
+    except Exception:
+        return []
+
+
+def fetch_competition_matches(code, days=DEFAULT_DATE_DAYS):
+    try:
+        today = datetime.now(timezone.utc).date()
+        date_from = today.isoformat()
+        date_to = (today + timedelta(days=days)).isoformat()
+        data = api_get(f"/competitions/{code}/matches", params={"dateFrom": date_from, "dateTo": date_to})
         return data.get("matches", [])
     except Exception:
         return []
 
 
-def fetch_competition_info(code):
-    try:
-        return api_get(f"/competitions/{code}")
-    except Exception:
-        return None
-
-
 def load_all_matches():
+    competitions = fetch_competitions()
+    allowed = {c["code"] for c in competitions if c.get("code") in FREE_COMPETITIONS}
     all_matches = []
     for code in FREE_COMPETITIONS:
-        matches = fetch_competition_matches(code)
-        all_matches.extend(matches)
+        if code not in allowed:
+            continue
+        all_matches.extend(fetch_competition_matches(code))
     return all_matches
 
 
 def split_by_date(matches):
     today = datetime.now(timezone.utc).date()
     week_end = today + timedelta(days=7)
-
     daily = []
     weekly = []
-
     for m in matches:
         dt = parse_utc(m.get("utcDate"))
         if not dt:
@@ -157,7 +152,6 @@ def split_by_date(matches):
             daily.append(m)
         if today <= d <= week_end:
             weekly.append(m)
-
     return daily, weekly
 
 
