@@ -139,6 +139,8 @@ UI = {
         "top_day": "Най-важните мачове за деня",
         "forecast": "Прогноза",
         "confidence": "Шанс",
+        "match": "Мач",
+        "match_details": "Детайли",
     },
     "en": {
         "title": "Football Intelligence",
@@ -159,6 +161,8 @@ UI = {
         "top_day": "Most important matches today",
         "forecast": "Forecast",
         "confidence": "Confidence",
+        "match": "Match",
+        "match_details": "Details",
     },
 }
 
@@ -280,14 +284,19 @@ def predict_1x2(m):
     return max(probs, key=probs.get), probs
 
 
-def safe_markets(m):
+def estimate_extra_markets(m):
     total = score_match(m)
+    drawish = m["probs"]["X"] * 100
+    openness = 100 - drawish
+    goals = max(42, min(86, 55 + openness * 0.35 + (total - 100) * 0.12))
+    cards = max(40, min(90, 45 + (m["confidence"] / 2) + (total - 95) * 0.18))
+    shots = max(38, min(88, 44 + openness * 0.28 + (total - 100) * 0.08))
     return {
-        "safe": round(min(92, max(55, total - 20)), 1),
-        "combo": round(min(96, max(60, total - 14)), 1),
-        "cards": round(min(85, max(50, 62 + (total - 100) / 2)), 1),
-        "goals": round(min(88, max(48, 60 + (total - 100) / 3)), 1),
-        "shots": round(min(84, max(45, 58 + (total - 100) / 4)), 1),
+        "safe": round(min(95, max(55, total - 16)), 1),
+        "combo": round(min(97, max(58, total - 10)), 1),
+        "cards": round(cards, 1),
+        "goals": round(goals, 1),
+        "shots": round(shots, 1),
     }
 
 
@@ -300,7 +309,7 @@ def enrich(matches):
         m["pred1x2"] = pred
         m["probs"] = probs
         m["confidence"] = round(max(probs.values()) * 100, 1)
-        m["markets"] = safe_markets(m)
+        m["markets"] = estimate_extra_markets(m)
         out.append(m)
     return sorted(
         out,
@@ -376,29 +385,54 @@ def render_scale(m):
     )
 
 
+def card_border(title_html, body_html=""):
+    return f"""
+    <div style="border:1px solid rgba(141,211,255,0.35); border-radius:18px; padding:14px 16px; margin:10px 0; background:rgba(255,255,255,0.02);">
+      {title_html}
+      {body_html}
+    </div>
+    """
+
+
 def render_match(m):
     dt = parse_utc(m["utcDate"])
-    st.markdown(
-        f"<div style='font-size:0.85rem;color:#8dd3ff;font-weight:800;text-transform:uppercase;'>{m['competitionCode']} · {m['competitionLabel']}</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(f"### {tr_team(m['homeTeam'])} vs {tr_team(m['awayTeam'])}")
-    st.markdown(f"**{fmt_dt(dt)}** · {m['status']}")
+    body = f"""
+    <div style="font-size:0.85rem;color:#b0b0b0;margin-top:4px;">{fmt_dt(dt)} · {m['status']}</div>
+    """
+    st.markdown(card_border(
+        f"<div style='font-size:1.35rem;font-weight:900;color:#8dd3ff;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;'>{m['competitionCode']} · {m['competitionLabel']}</div>",
+        body
+    ), unsafe_allow_html=True)
     c1, c2 = st.columns([1.1, 1])
     with c1:
         render_scale(m)
     with c2:
-        st.markdown(f"**{ui()['forecast']}:** {m['pred1x2']}\n\n**{ui()['confidence']}:** {m['confidence']}%")
-    with st.expander(ui()["info"]):
-        st.write(f"{m['competitionLabel']}: {tr_team(m['homeTeam'])} срещу {tr_team(m['awayTeam'])}")
-        st.write(f"1/X/2: {m['probs']['1']*100:.1f}% / {m['probs']['X']*100:.1f}% / {m['probs']['2']*100:.1f}%")
-        st.write(f"{ui()['markets']}:")
-        st.write(f"- {ui()['best_bets']}: {m['markets']['safe']}%")
-        st.write(f"- {ui()['recommended']}: {m['markets']['combo']}%")
-        st.write(f"- Картони: {m['markets']['cards']}%")
-        st.write(f"- Голове: {m['markets']['goals']}%")
-        st.write(f"- Удари: {m['markets']['shots']}%")
+        st.markdown(
+            f"**{ui()['forecast']}:** {m['pred1x2']}\n\n**{ui()['confidence']}:** {m['confidence']}%",
+        )
+        with st.expander(ui()["info"]):
+            st.write(f"{m['competitionLabel']}: {tr_team(m['homeTeam'])} срещу {tr_team(m['awayTeam'])}")
+            st.write(f"1/X/2: {m['probs']['1']*100:.1f}% / {m['probs']['X']*100:.1f}% / {m['probs']['2']*100:.1f}%")
+            st.write(f"{ui()['markets']}:")
+            st.write(f"- {ui()['best_bets']}: {m['markets']['safe']}%")
+            st.write(f"- {ui()['recommended']}: {m['markets']['combo']}%")
+            st.write(f"- Картони: {m['markets']['cards']}%")
+            st.write(f"- Голове: {m['markets']['goals']}%")
+            st.write(f"- Удари: {m['markets']['shots']}%")
     st.divider()
+
+
+def render_league_block(code, matches):
+    st.markdown(
+        f"""
+        <div style="border:2px solid rgba(195,156,255,0.45); border-radius:22px; padding:16px 18px; margin:18px 0; background:rgba(255,255,255,0.02);">
+          <div style="font-size:1.9rem;font-weight:950;color:#c79cff;line-height:1.1;margin-bottom:10px;">{comp_name(code)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    for m in matches:
+        render_match(m)
 
 
 def df_view(matches):
@@ -461,17 +495,18 @@ def main():
             chosen_code = next(c for c in codes if code_to_label[c] == league_choice)
             filtered = [m for m in matches if m["competitionCode"] == chosen_code]
 
-        top = filtered[:3]
         today_utc = datetime.now(timezone.utc).date()
         daily = [m for m in filtered if parse_utc(m["utcDate"]) and parse_utc(m["utcDate"]).date() == today_utc]
         weekly = [m for m in filtered if parse_utc(m["utcDate"]) and today_utc <= parse_utc(m["utcDate"]).date() <= today_utc + timedelta(days=7)]
 
         st.subheader(ui()["top_predictions"])
-        for m in top:
-            render_match(m)
+        for code in codes:
+            league_matches = [m for m in filtered if m["competitionCode"] == code]
+            if league_matches:
+                render_league_block(code, league_matches[:3])
 
         st.subheader(ui()["top_day"])
-        for m in top:
+        for m in filtered[:3]:
             render_match(m)
 
         st.subheader(ui()["today"])
@@ -483,7 +518,11 @@ def main():
 
         st.subheader(ui()["table_view"])
         view = st.selectbox(ui()["view"], [ui()["top_predictions"], ui()["today"], ui()["week"], "All"])
-        chosen = top if view == ui()["top_predictions"] else daily if view == ui()["today"] else weekly if view == ui()["week"] else filtered
+        chosen = filtered
+        if view == ui()["today"]:
+            chosen = daily
+        elif view == ui()["week"]:
+            chosen = weekly
         st.dataframe(df_view(chosen), use_container_width=True)
 
     except Exception as e:
