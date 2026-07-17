@@ -1,5 +1,4 @@
 import os
-import math
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -83,7 +82,6 @@ TEAM_TRANSLATIONS = {
         "Nigeria": "Нигерия",
         "Ghana": "Гана",
         "South Africa": "Южна Африка",
-        "Saudi Arabia": "Саудитска Арабия",
         "United Arab Emirates": "Обединени арабски емирства",
         "Real Madrid": "Реал Мадрид",
         "Barcelona": "Барселона",
@@ -140,8 +138,6 @@ UI = {
         "status": "Статус",
         "forecast": "Прогноза",
         "confidence": "Шанс",
-        "browser_tz": "Браузърна часова зона",
-        "match": "Мач",
     },
     "en": {
         "title": "Football Intelligence",
@@ -161,13 +157,18 @@ UI = {
         "status": "Status",
         "forecast": "Forecast",
         "confidence": "Confidence",
-        "browser_tz": "Browser timezone",
-        "match": "Match",
     },
 }
 
-COMPETITION_WEIGHTS = {"WC": 105, "CL": 100, "EL": 94, "PL": 96, "PD": 95, "BL1": 93, "SA": 92, "FL1": 90, "DED": 82, "BSA": 80, "PPL": 81}
-STATUS_WEIGHTS = {"LIVE": 55, "IN_PLAY": 55, "PAUSED": 45, "TIMED": 25, "SCHEDULED": 25, "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0}
+COMPETITION_WEIGHTS = {
+    "WC": 105, "CL": 100, "EL": 94, "PL": 96, "PD": 95, "BL1": 93, "SA": 92,
+    "FL1": 90, "DED": 82, "BSA": 80, "PPL": 81
+}
+
+STATUS_WEIGHTS = {
+    "LIVE": 55, "IN_PLAY": 55, "PAUSED": 45, "TIMED": 25, "SCHEDULED": 25,
+    "FINISHED": 5, "POSTPONED": 0, "SUSPENDED": 0, "CANCELLED": 0
+}
 
 
 def ui():
@@ -202,10 +203,6 @@ def parse_utc(v):
     return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
 
 
-def browser_tz():
-    return st.context.timezone or "UTC"
-
-
 def fmt_dt(dt):
     if not dt:
         return ""
@@ -224,16 +221,9 @@ def fetch_competitions():
 
 def load_competitions():
     available = fetch_competitions()
-    codes = [c["code"] for c in available if c.get("code") in ALL_FREE_COMPETITIONS()]
+    codes = [c["code"] for c in available if c.get("code") in ALL_FREE_COMPETITIONS]
     ordered = [c for c in PRIORITY_COMPETITIONS if c in codes]
     return ordered or PRIORITY_COMPETITIONS[:]
-
-
-def ALL_FREE_COMPETITIONS():
-    return ALL_FREE_COMPETITIONS_LIST
-
-
-ALL_FREE_COMPETITIONS_LIST = ALL_FREE_COMPETITIONS
 
 
 def fetch_matches_for_competition(code):
@@ -310,7 +300,15 @@ def enrich(matches):
         m["confidence"] = round(max(probs.values()) * 100, 1)
         m["markets"] = safe_markets(m)
         out.append(m)
-    return sorted(out, key=lambda x: (x["competitionCode"] in PRIORITY_COMPETITIONS, x["confidence"], x["importance"]), reverse=True)
+    return sorted(
+        out,
+        key=lambda x: (
+            x["competitionCode"] in PRIORITY_COMPETITIONS,
+            x["confidence"],
+            x["importance"],
+        ),
+        reverse=True,
+    )
 
 
 def language_button():
@@ -318,21 +316,18 @@ def language_button():
     st.markdown(
         """
         <style>
-        div[data-testid="stSelectbox"] {
-            width: 56px !important;
-        }
+        div[data-testid="stSelectbox"] { width: 60px !important; }
         div[data-baseweb="select"] > div {
-            width: 56px !important;
-            min-height: 56px !important;
-            height: 56px !important;
+            width: 60px !important;
+            min-height: 60px !important;
+            height: 60px !important;
             border-radius: 999px !important;
-            padding-left: 0.2rem !important;
-            padding-right: 0.2rem !important;
+            padding: 0 !important;
             align-items: center !important;
             justify-content: center !important;
         }
         div[data-baseweb="select"] span {
-            font-size: 1.25rem !important;
+            font-size: 1.3rem !important;
             line-height: 1 !important;
         }
         </style>
@@ -381,7 +376,10 @@ def render_scale(m):
 
 def render_match(m):
     dt = parse_utc(m["utcDate"])
-    st.markdown(f"<div style='font-size:0.85rem;color:#8dd3ff;font-weight:800;text-transform:uppercase;'>{m['competitionCode']} · {m['competitionLabel']}</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='font-size:0.85rem;color:#8dd3ff;font-weight:800;text-transform:uppercase;'>{m['competitionCode']} · {m['competitionLabel']}</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(f"### {tr_team(m['homeTeam'])} vs {tr_team(m['awayTeam'])}")
     st.markdown(f"**{fmt_dt(dt)}** · {m['status']}")
     c1, c2 = st.columns([1.1, 1])
@@ -423,9 +421,7 @@ def main():
         <style>
         .stApp{background:#0d0b16;color:#f5f0ff;}
         h1,h2,h3,h4{color:#c79cff !important;}
-        div[data-baseweb="select"] > div {
-            border-radius:999px !important;
-        }
+        div[data-baseweb="select"] > div { border-radius:999px !important; }
         </style>
         """,
         unsafe_allow_html=True,
