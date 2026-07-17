@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -25,6 +24,37 @@ COMPETITION_LABELS = {
     "CL": {"bg": "Шампионска лига", "en": "Champions League"},
     "EL": {"bg": "Лига Европа", "en": "Europa League"},
     "WC": {"bg": "Световно първенство", "en": "World Cup"},
+}
+
+TEAM_TRANSLATIONS = {
+    "bg": {
+        "Real Madrid": "Реал Мадрид",
+        "Barcelona": "Барселона",
+        "Atletico Madrid": "Атлетико Мадрид",
+        "Bayern Munich": "Байерн Мюнхен",
+        "Borussia Dortmund": "Борусия Дортмунд",
+        "Inter Milan": "Интер",
+        "AC Milan": "Милан",
+        "Juventus": "Ювентус",
+        "Manchester City": "Манчестър Сити",
+        "Manchester United": "Манчестър Юнайтед",
+        "Liverpool": "Ливърпул",
+        "Arsenal": "Арсенал",
+        "Chelsea": "Челси",
+        "Tottenham Hotspur": "Тотнъм",
+        "Paris Saint-Germain": "Пари Сен Жермен",
+        "Marseille": "Марсилия",
+        "Lyon": "Лион",
+        "Porto": "Порто",
+        "Benfica": "Бенфика",
+        "Sporting CP": "Спортинг",
+        "Brazil": "Бразилия",
+        "Argentina": "Аржентина",
+        "Spain": "Испания",
+        "France": "Франция",
+        "Germany": "Германия",
+        "England": "Англия",
+    }
 }
 
 LANGS = {
@@ -54,9 +84,7 @@ UI = {
         "status": "Статус",
         "forecast": "Прогноза",
         "confidence": "Шанс",
-        "timezone": "Часова зона",
-        "browser_tz": "Браузърна зона",
-        "utc_tz": "UTC",
+        "match": "Мач",
     },
     "en": {
         "title": "Football Intelligence",
@@ -79,9 +107,7 @@ UI = {
         "status": "Status",
         "forecast": "Forecast",
         "confidence": "Confidence",
-        "timezone": "Timezone",
-        "browser_tz": "Browser zone",
-        "utc_tz": "UTC",
+        "match": "Match",
     },
 }
 
@@ -98,6 +124,10 @@ STATUS_WEIGHTS = {
 
 def ui():
     return UI[st.session_state.get("lang", "bg")]
+
+
+def tr_team(name):
+    return TEAM_TRANSLATIONS.get(st.session_state.get("lang", "bg"), {}).get(name, name)
 
 
 def comp_name(code):
@@ -124,35 +154,13 @@ def parse_utc(v):
     return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
 
 
-def browser_timezone():
-    try:
-        tz = st.context.get("timezone", None)
-        if tz:
-            return tz
-    except Exception:
-        pass
-    return st.session_state.get("browser_tz", "UTC")
-
-
-def detect_browser_timezone():
-    html = """
-    <script>
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    const msg = JSON.stringify({timezone: tz});
-    window.parent.postMessage(msg, "*");
-    </script>
-    """
-    components.html(html, height=0)
-
-
 def fmt_dt(dt):
     if not dt:
         return ""
-    tz_name = browser_timezone()
     try:
-        return dt.astimezone().astimezone(timezone.utc).astimezone().strftime("%H:%M · %d.%m.%Y") if tz_name == "UTC" else dt.astimezone().strftime("%H:%M · %d.%m.%Y")
-    except Exception:
         return dt.astimezone().strftime("%H:%M · %d.%m.%Y")
+    except Exception:
+        return dt.strftime("%H:%M · %d.%m.%Y")
 
 
 def fetch_competitions():
@@ -178,10 +186,10 @@ def fetch_matches_for_competition(code):
 
 
 def load_all_matches(codes):
-    matches = []
-    for code in codes:
-        matches.extend(fetch_matches_for_competition(code))
-    return matches
+    out = []
+    for c in codes:
+        out.extend(fetch_matches_for_competition(c))
+    return out
 
 
 def normalize_match(m):
@@ -201,27 +209,23 @@ def normalize_match(m):
 
 
 def score_match(m):
-    code = m["competitionCode"]
-    status = m["status"]
+    base = COMPETITION_WEIGHTS.get(m["competitionCode"], 70) + STATUS_WEIGHTS.get(m["status"], 10)
     dt = parse_utc(m["utcDate"])
-    base = COMPETITION_WEIGHTS.get(code, 70) + STATUS_WEIGHTS.get(status, 10)
-    time_bonus = 0
     if dt:
         hours = abs((dt - datetime.now(timezone.utc)).total_seconds()) / 3600
-        time_bonus = max(0, 24 - min(hours, 24))
-    return round(base + time_bonus, 2)
+        base += max(0, 24 - min(hours, 24))
+    return round(base, 2)
 
 
 def predict_1x2(m):
-    strength = COMPETITION_WEIGHTS.get(m["competitionCode"], 70) / 105
-    total = score_match(m) / 140
-    home = max(0.18, min(0.62, 0.30 + 0.18 * strength + 0.12 * total))
-    draw = max(0.12, min(0.34, 0.26 - 0.04 * (strength - 0.5) + 0.03 * (1 - total)))
+    s = COMPETITION_WEIGHTS.get(m["competitionCode"], 70) / 105
+    t = score_match(m) / 140
+    home = max(0.18, min(0.62, 0.30 + 0.18 * s + 0.12 * t))
+    draw = max(0.12, min(0.34, 0.26 - 0.04 * (s - 0.5) + 0.03 * (1 - t)))
     away = max(0.18, min(0.62, 1 - home - draw))
-    s = home + draw + away
-    probs = {"1": home / s, "X": draw / s, "2": away / s}
-    best = max(probs, key=probs.get)
-    return best, probs
+    z = home + draw + away
+    probs = {"1": home / z, "X": draw / z, "2": away / z}
+    return max(probs, key=probs.get), probs
 
 
 def safe_markets(m):
@@ -245,35 +249,44 @@ def enrich(matches):
         m["probs"] = probs
         m["confidence"] = round(max(probs.values()) * 100, 1)
         m["markets"] = safe_markets(m)
-        m["summary"] = f"{m['competitionLabel']}: {m['homeTeam']} срещу {m['awayTeam']}. Прогноза: {pred}."
         out.append(m)
     return sorted(out, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
 
 
-def compact_scale(m):
-    p1 = m["probs"]["1"] * 100
-    px = m["probs"]["X"] * 100
-    p2 = m["probs"]["2"] * 100
-    cols = st.columns(3, gap="small")
-    with cols[0]:
-        st.markdown(f"<div style='text-align:center;font-weight:700;color:#19c37d;'>1 {p1:.1f}%</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#19c37d,#76f7b0);'></div>", unsafe_allow_html=True)
-    with cols[1]:
-        st.markdown(f"<div style='text-align:center;font-weight:700;color:#a8a8a8;'>X {px:.1f}%</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#a8a8a8,#dddddd);'></div>", unsafe_allow_html=True)
-    with cols[2]:
-        st.markdown(f"<div style='text-align:center;font-weight:700;color:#ff5b5b;'>2 {p2:.1f}%</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='height:14px;border-radius:999px;background:linear-gradient(90deg,#ff5b5b,#ff9b9b);'></div>", unsafe_allow_html=True)
+def league_header(code):
+    return f"<div style='font-size:0.9rem;color:#8dd3ff;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;margin:8px 0 2px 0;'>{comp_name(code)}</div>"
+
+
+def scale_html(m):
+    p1, px, p2 = m["probs"]["1"] * 100, m["probs"]["X"] * 100, m["probs"]["2"] * 100
+    return f"""
+    <div style='width:360px; max-width:100%; margin:0 0 8px 0;'>
+      <div style='display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-bottom:4px;'>
+        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>1</div>
+        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>X</div>
+        <div style='text-align:center; font-size:0.85rem; font-weight:700; color:#8dd3ff;'>2</div>
+      </div>
+      <div style='display:grid; grid-template-columns:repeat(3, 1fr); height:26px; border-radius:999px; overflow:hidden; box-shadow:0 0 0 1px rgba(255,255,255,0.08) inset;'>
+        <div style='background:linear-gradient(90deg,#0dbf6b 0%,#79f2b4 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{p1:.1f}%</span></div>
+        <div style='background:linear-gradient(90deg,#9a9a9a 0%,#d9d9d9 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{px:.1f}%</span></div>
+        <div style='background:linear-gradient(90deg,#ff5b5b 0%,#ff9b9b 100%); display:flex; align-items:center; justify-content:center;'><span style='color:#000;font-weight:800;font-size:0.9rem;text-shadow:0 0 2px rgba(255,255,255,0.55);'>{p2:.1f}%</span></div>
+      </div>
+    </div>
+    """
 
 
 def render_match(m):
     dt = parse_utc(m["utcDate"])
-    st.markdown(f"### {m['homeTeam']} vs {m['awayTeam']}")
+    st.markdown(league_header(m["competitionCode"]), unsafe_allow_html=True)
+    st.markdown(f"### {tr_team(m['homeTeam'])} vs {tr_team(m['awayTeam'])}")
     st.markdown(f"**{fmt_dt(dt)}** · {m['status']}")
-    compact_scale(m)
-    st.markdown(f"**{ui()['forecast']}:** {m['pred1x2']} · **{ui()['confidence']}:** {m['confidence']}%")
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        st.markdown(scale_html(m), unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"**{ui()['forecast']}:** {m['pred1x2']}\n\n**{ui()['confidence']}:** {m['confidence']}%")
     with st.expander(ui()["info"]):
-        st.write(m["summary"])
+        st.write(f"{m['competitionLabel']}: {tr_team(m['homeTeam'])} срещу {tr_team(m['awayTeam'])}")
         st.write(f"1/X/2: {m['probs']['1']*100:.1f}% / {m['probs']['X']*100:.1f}% / {m['probs']['2']*100:.1f}%")
         st.write(f"{ui()['markets']}:")
         st.write(f"- {ui()['best_bets']}: {m['markets']['safe']}%")
@@ -290,8 +303,8 @@ def df_view(matches):
         rows.append({
             "Време": fmt_dt(parse_utc(m["utcDate"])),
             "Лига": m["competitionLabel"],
-            "Домакин": m["homeTeam"],
-            "Гост": m["awayTeam"],
+            "Домакин": tr_team(m["homeTeam"]),
+            "Гост": tr_team(m["awayTeam"]),
             "Прогноза": m["pred1x2"],
             "Шанс": m["confidence"],
             "Статус": m["status"],
@@ -301,12 +314,11 @@ def df_view(matches):
 
 def language_button():
     current = st.session_state.get("lang", "bg")
-    label = f"{LANGS[current]['flag']} {LANGS[current]['label']}"
     choice = st.selectbox(
-        "Language",
+        " ",
         ["bg", "en"],
         index=0 if current == "bg" else 1,
-        format_func=lambda x: f"{LANGS[x]['flag']} {LANGS[x]['label']}",
+        format_func=lambda x: f"{LANGS[x]['flag']}  {LANGS[x]['label']}",
         label_visibility="collapsed",
         key="lang_selector",
     )
@@ -320,12 +332,14 @@ def main():
         <style>
         .stApp{background:#0d0b16;color:#f5f0ff;}
         h1,h2,h3,h4{color:#c79cff !important;}
-        div[data-baseweb="select"] > div{
-            border-radius:16px !important;
-            min-height:44px !important;
+        div[data-baseweb='select'] > div{
+            border-radius:14px !important;
+            min-height:34px !important;
+            height:34px !important;
+            width:84px !important;
         }
-        button[kind="secondary"]{
-            border-radius:16px !important;
+        div[data-baseweb='select'] span{
+            font-size:0.88rem !important;
         }
         </style>
         """,
@@ -335,7 +349,10 @@ def main():
     if "lang" not in st.session_state:
         st.session_state.lang = "bg"
 
-    detect_browser_timezone()
+    components.html(
+        "<script>window.parent.postMessage(JSON.stringify({timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'}),'*');</script>",
+        height=0,
+    )
 
     c1, c2 = st.columns([4, 1])
     with c1:
