@@ -1,16 +1,54 @@
 import os
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import requests
 import streamlit as st
-import pandas as pd
 
 API_BASE = "https://api.football-data.org/v4"
-DEFAULT_COMPETITIONS = ["PL", "CL", "BSA", "PD", "SA", "BL1", "DED", "FL1", "ELC", "PPL"]
+FREE_COMPETITIONS = [
+    "PL",
+    "PD",
+    "BL1",
+    "SA",
+    "FL1",
+    "DED",
+    "BSA",
+    "PPL",
+    "CL",
+    "EL",
+]
+
+COMPETITION_WEIGHTS = {
+    "PL": 100,
+    "PD": 96,
+    "BL1": 94,
+    "SA": 92,
+    "FL1": 90,
+    "DED": 84,
+    "BSA": 82,
+    "PPL": 80,
+    "CL": 98,
+    "EL": 88,
+}
+
+STATUS_WEIGHTS = {
+    "LIVE": 50,
+    "TIMED": 20,
+    "SCHEDULED": 20,
+    "FINISHED": 5,
+    "POSTPONED": 0,
+    "CANCELLED": 0,
+}
 
 
 def get_api_key():
-    key = st.secrets.get("FOOTBALL_DATA_API_KEY", None) if hasattr(st, "secrets") else None
+    key = ""
+    if hasattr(st, "secrets"):
+        try:
+            key = st.secrets.get("FOOTBALL_DATA_API_KEY", "")
+        except Exception:
+            key = ""
     if not key:
         key = os.getenv("FOOTBALL_DATA_API_KEY", "")
     return key.strip()
@@ -20,27 +58,20 @@ def api_get(path, params=None):
     api_key = get_api_key()
     if not api_key:
         raise RuntimeError("Missing FOOTBALL_DATA_API_KEY")
-
     headers = {"X-Auth-Token": api_key}
-    url = f"{API_BASE}{path}"
-    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    resp = requests.get(f"{API_BASE}{path}", headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 
-def fetch_today_matches():
-    return api_get("/matches")
-
-
-def fetch_competition_matches(competition_code):
-    return api_get(f"/competitions/{competition_code}/matches")
+def parse_utc(date_str):
+    if not date_str:
+        return None
+    return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
 
 
 def normalize_match(match):
     full_time = match.get("score", {}).get("fullTime", {})
-    home_score = full_time.get("home")
-    away_score = full_time.get("away")
-
     return {
         "id": match.get("id"),
         "provider": "football-data",
@@ -51,35 +82,21 @@ def normalize_match(match):
         "competitionId": match.get("competition", {}).get("id"),
         "competitionCode": match.get("competition", {}).get("code"),
         "status": match.get("status", ""),
-        "scoreHome": home_score,
-        "scoreAway": away_score,
+        "scoreHome": full_time.get("home"),
+        "scoreAway": full_time.get("away"),
         "importance": 0,
         "raw": match,
     }
 
 
-def parse_utc(date_str):
-    if not date_str:
-        return None
-    return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-
-
 def compute_importance(m):
-    score = 0
-
     comp = (m.get("competitionCode") or "").upper()
     status = (m.get("status") or "").upper()
     dt = parse_utc(m.get("utcDate"))
 
-    top_competitions = {"PL": 100, "CL": 95, "PD": 90, "BL1": 88, "SA": 86, "FL1": 84, "BSA": 75}
-    score += top_competitions.get(comp, 50)
-
-    if status == "LIVE":
-        score += 40
-    elif status in {"TIMED", "SCHEDULED"}:
-        score += 20
-    elif status == "FINISHED":
-        score += 5
+    score = 0
+    score += COMPETITION_WEIGHTS.get(comp, 60)
+    score += STATUS_WEIGHTS.get(status, 10)
 
     if dt:
         now = datetime.now(timezone.utc)
@@ -93,10 +110,35 @@ def compute_importance(m):
 
 
 def enrich_matches(matches):
-    normalized = [normalize_match(m) for m in matches]
-    for m in normalized:
-        m["importance"] = compute_importance(m)
-    return sorted(normalized, key=lambda x: x["importance"], reverse=True)
+    enriched = []
+    for match in matches:
+        item = normalize_match(match)
+        item["importance"] = compute_importance(item)
+        enriched.append(item)
+    return sorted(enriched, key=lambda x: x["importance"], reverse=True)
+
+
+def fetch_competition_matches(code):
+    try:
+        data = api_get(f"/competitions/{code}/matches")
+        return data.get("matches", [])
+    except Exception:
+        return []
+
+
+def fetch_competition_info(code):
+    try:
+        return api_get(f"/competitions/{code}")
+    except Exception:
+        return None
+
+
+def load_all_matches():
+    all_matches = []
+    for code in FREE_COMPETITIONS:
+        matches = fetch_competition_matches(code)
+        all_matches.extend(matches)
+    return all_matches
 
 
 def split_by_date(matches):
@@ -110,10 +152,10 @@ def split_by_date(matches):
         dt = parse_utc(m.get("utcDate"))
         if not dt:
             continue
-        match_date = dt.date()
-        if match_date == today:
+        d = dt.date()
+        if d == today:
             daily.append(m)
-        if today <= match_date <= week_end:
+        if today <= d <= week_end:
             weekly.append(m)
 
     return daily, weekly
@@ -147,30 +189,13 @@ def render_match_card(m):
     st.divider()
 
 
-def get_all_matches():
-    base = fetch_today_matches()
-    matches = base.get("matches", [])
-    if matches:
-        return matches
-
-    collected = []
-    for code in DEFAULT_COMPETITIONS:
-        try:
-            data = fetch_competition_matches(code)
-            collected.extend(data.get("matches", []))
-        except Exception:
-            continue
-    return collected
-
-
 def main():
     st.set_page_config(page_title="Football Predictions Demo", layout="wide")
     st.title("Football Predictions Demo")
-
     st.caption("Data provider: football-data.org")
 
     try:
-        raw_matches = get_all_matches()
+        raw_matches = load_all_matches()
         enriched = enrich_matches(raw_matches)
         daily, weekly = split_by_date(enriched)
 
@@ -192,8 +217,11 @@ def main():
         st.subheader("Table view")
         view = st.selectbox("View", ["Daily", "Weekly", "All"])
         chosen = daily if view == "Daily" else weekly if view == "Weekly" else enriched
-        df = matches_to_df(chosen)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(matches_to_df(chosen), use_container_width=True)
+
+        st.subheader("Competition details")
+        st.write("Free competitions used:")
+        st.write(", ".join(FREE_COMPETITIONS))
 
     except Exception as e:
         st.error(f"Failed to load matches: {e}")
