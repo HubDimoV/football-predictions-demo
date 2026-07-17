@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+import math
 
 import pandas as pd
 import requests
@@ -8,6 +9,7 @@ import streamlit as st
 API_BASE = "https://api.football-data.org/v4"
 FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL", "WC"]
 DEFAULT_DAYS = 7
+MAX_PICKS = 10
 
 COMPETITION_LABELS = {
     "PL": "Premier League",
@@ -95,11 +97,20 @@ def normalize_match(match):
         "scoreHome": full_time.get("home"),
         "scoreAway": full_time.get("away"),
         "importance": 0,
+        "matchForm": 0,
+        "history": 0,
+        "news": 0,
+        "comments": 0,
+        "bookmakers": 0,
+        "pred_home": 0,
+        "pred_away": 0,
+        "pred_draw": 0,
+        "summary": "",
         "raw": match,
     }
 
 
-def compute_importance(m):
+def compute_base_importance(m):
     comp = (m.get("competitionCode") or "").upper()
     status = (m.get("status") or "").upper()
     dt = parse_utc(m.get("utcDate"))
@@ -113,15 +124,6 @@ def compute_importance(m):
     if m.get("scoreHome") is not None or m.get("scoreAway") is not None:
         score += 5
     return round(score, 2)
-
-
-def enrich_matches(matches):
-    out = []
-    for match in matches:
-        item = normalize_match(match)
-        item["importance"] = compute_importance(item)
-        out.append(item)
-    return sorted(out, key=lambda x: x["importance"], reverse=True)
 
 
 def fetch_competitions():
@@ -173,6 +175,78 @@ def split_by_date(matches):
     return daily, weekly
 
 
+def simulate_prediction(m):
+    comp = (m.get("competitionCode") or "").upper()
+    base = COMPETITION_WEIGHTS.get(comp, 60) / 100.0
+    time_factor = 0.08 if m.get("status") in {"TIMED", "SCHEDULED"} else 0.05
+    history = m.get("history", 0) / 100.0
+    news = m.get("news", 0) / 100.0
+    comments = m.get("comments", 0) / 100.0
+    bookmakers = m.get("bookmakers", 0) / 100.0
+    form = m.get("matchForm", 0) / 100.0
+    model = (
+        0.22 * base
+        + 0.18 * form
+        + 0.16 * history
+        + 0.12 * news
+        + 0.10 * comments
+        + 0.12 * bookmakers
+        + 0.10 * time_factor
+    )
+    model = max(0.05, min(0.95, model))
+    draw = max(0.10, min(0.30, 0.28 - 0.10 * (model - 0.5)))
+    home = max(0.05, min(0.90, model - draw / 2))
+    away = max(0.05, min(0.90, 1 - home - draw))
+    total = home + draw + away
+    home /= total
+    draw /= total
+    away /= total
+    if home >= away and home >= draw:
+        pick = f"{m.get('homeTeam', '')} to win"
+        chance = home
+        color = "green"
+    elif away >= home and away >= draw:
+        pick = f"{m.get('awayTeam', '')} to win"
+        chance = away
+        color = "green"
+    else:
+        pick = "Draw"
+        chance = draw
+        color = "red"
+    return pick, chance, color, home, draw, away
+
+
+def build_summary(m, pick, chance):
+    comp = m.get("competitionLabel", m.get("competition", ""))
+    home = m.get("homeTeam", "")
+    away = m.get("awayTeam", "")
+    dt = parse_utc(m.get("utcDate"))
+    when = dt.astimezone().strftime("%Y-%m-%d %H:%M") if dt else ""
+    return f"{comp}: {home} vs {away} at {when}. Predicted: {pick} ({int(chance * 100)}%)."
+
+
+def enrich_matches(matches):
+    out = []
+    for match in matches:
+        item = normalize_match(match)
+        item["importance"] = compute_base_importance(item)
+        item["matchForm"] = min(100, item["importance"] * 0.5)
+        item["history"] = min(100, item["importance"] * 0.35)
+        item["news"] = min(100, item["importance"] * 0.25)
+        item["comments"] = min(100, item["importance"] * 0.2)
+        item["bookmakers"] = min(100, item["importance"] * 0.3)
+        pick, chance, color, home, draw, away = simulate_prediction(item)
+        item["prediction"] = pick
+        item["confidence"] = round(chance * 100, 1)
+        item["confidenceColor"] = color
+        item["pred_home"] = round(home * 100, 1)
+        item["pred_draw"] = round(draw * 100, 1)
+        item["pred_away"] = round(away * 100, 1)
+        item["summary"] = build_summary(item, pick, chance)
+        out.append(item)
+    return sorted(out, key=lambda x: (x["confidence"], x["importance"]), reverse=True)
+
+
 def matches_to_df(matches):
     rows = []
     for m in matches:
@@ -184,27 +258,51 @@ def matches_to_df(matches):
                 "Home": m.get("homeTeam", ""),
                 "Away": m.get("awayTeam", ""),
                 "Status": m.get("status", ""),
+                "Prediction": m.get("prediction", ""),
+                "Confidence %": m.get("confidence", 0),
                 "Score": f'{m.get("scoreHome", "-")}-{m.get("scoreAway", "-")}',
-                "Importance": m.get("importance", 0),
             }
         )
     return pd.DataFrame(rows)
 
 
-def render_match_card(m):
+def render_match_card(m, show_summary=True):
     dt = parse_utc(m.get("utcDate"))
     local_dt = dt.astimezone() if dt else None
     score = f'{m.get("scoreHome", "-")}-{m.get("scoreAway", "-")}'
-    st.write(f'**{m.get("competitionLabel", m.get("competition", ""))}**')
-    st.write(f'{m.get("homeTeam", "")} vs {m.get("awayTeam", "")}')
-    st.write(f'[{local_dt.strftime("%Y-%m-%d %H:%M") if local_dt else ""}]  Status: {m.get("status", "")}  Score: {score}  Importance: {m.get("importance", 0)}')
+    color = "🟢" if m.get("confidenceColor") == "green" else "🔴"
+    st.markdown(f"**{m.get('competitionLabel', m.get('competition', ''))}**")
+    st.markdown(f"{m.get('homeTeam', '')} vs {m.get('awayTeam', '')}")
+    st.markdown(f"[{local_dt.strftime('%Y-%m-%d %H:%M') if local_dt else ''}] Status: {m.get('status', '')} Score: {score}")
+    st.markdown(f"Prediction: {m.get('prediction', '')}  |  {color} {m.get('confidence', 0)}%")
+    if show_summary:
+        with st.expander("Info / summary"):
+            st.write(m.get("summary", ""))
+            st.write(f"Form: {m.get('matchForm', 0):.1f} | History: {m.get('history', 0):.1f} | News: {m.get('news', 0):.1f}")
+            st.write(f"Comments: {m.get('comments', 0):.1f} | Bookmakers: {m.get('bookmakers', 0):.1f}")
+            st.write(f"Home / Draw / Away: {m.get('pred_home', 0)}% / {m.get('pred_draw', 0)}% / {m.get('pred_away', 0)}%")
     st.divider()
 
 
+def get_top_predictions(matches):
+    return sorted(matches, key=lambda x: (x["confidence"], x["importance"]), reverse=True)[:3]
+
+
 def main():
-    st.set_page_config(page_title="Football Predictions Demo", layout="wide")
-    st.title("Football Predictions Demo")
-    st.caption("Data provider: football-data.org")
+    st.set_page_config(page_title="Football Intelligence", layout="wide")
+    st.markdown(
+        """
+        <style>
+        .stApp { background-color: #0f0f18; color: #f3f0ff; }
+        .stMarkdown, .stText, .stDataFrame, .stSelectbox, .stSlider { color: #f3f0ff; }
+        div[data-testid="stMetric"] { background: #1b1230; padding: 12px; border-radius: 12px; border: 1px solid #6f42c1; }
+        h1, h2, h3, h4 { color: #c9a7ff !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("Football Intelligence")
+    st.caption("Purple predictive football dashboard")
 
     try:
         selected_codes = load_competitions_to_use()
@@ -215,38 +313,46 @@ def main():
         selected_labels = [f"{code_to_label[c]} ({c})" for c in selected_codes]
 
         st.subheader("Competition filter")
-        chosen_labels = st.multiselect(
-            "Competitions",
-            options=selected_labels,
-            default=selected_labels,
-        )
+        chosen_labels = st.multiselect("Competitions", options=selected_labels, default=selected_labels)
         chosen_codes = {item.split("(")[-1].replace(")", "").strip() for item in chosen_labels}
 
         active_matches = [m for m in enriched if m.get("competitionCode") in chosen_codes]
         daily, weekly = split_by_date(active_matches)
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total matches", len(active_matches))
         c2.metric("Today", len(daily))
         c3.metric("This week", len(weekly))
+        c4.metric("Top picks", min(MAX_PICKS, len(active_matches)))
+
+        st.subheader("Top predictions")
+        top_predictions = get_top_predictions(active_matches)
+        for m in top_predictions:
+            render_match_card(m, show_summary=True)
 
         st.subheader("Top matches for today")
-        daily_limit = st.slider("Daily limit", 1, 20, 5)
+        daily_limit = st.slider("Daily limit", 1, MAX_PICKS, 5)
         for m in daily[:daily_limit]:
-            render_match_card(m)
+            render_match_card(m, show_summary=True)
 
         st.subheader("Top matches for this week")
-        weekly_limit = st.slider("Weekly limit", 1, 50, 10)
+        weekly_limit = st.slider("Weekly limit", 1, 20, 10)
         for m in weekly[:weekly_limit]:
-            render_match_card(m)
+            render_match_card(m, show_summary=True)
 
         st.subheader("Table view")
-        view = st.selectbox("View", ["Daily", "Weekly", "All"])
-        chosen = daily if view == "Daily" else weekly if view == "Weekly" else active_matches
+        view = st.selectbox("View", ["Top picks", "Daily", "Weekly", "All"])
+        chosen = top_predictions if view == "Top picks" else daily if view == "Daily" else weekly if view == "Weekly" else active_matches
         st.dataframe(matches_to_df(chosen), use_container_width=True)
 
-        st.subheader("Competition details")
+        st.subheader("Recommended now")
+        st.write(" | ".join([f"{m['homeTeam']} vs {m['awayTeam']} ({m['confidence']}%)" for m in top_predictions[:3]]))
+
+        st.subheader("Free competitions used")
         st.write(", ".join(selected_labels))
+
+        st.subheader("Next improvements")
+        st.write("Add form, history, news, comments, and bookmaker feeds per match. Then replace simulated signals with real sources and keep the same scoring pipeline.")
 
     except Exception as e:
         st.error(f"Failed to load matches: {e}")
