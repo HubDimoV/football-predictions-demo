@@ -6,8 +6,22 @@ import requests
 import streamlit as st
 
 API_BASE = "https://api.football-data.org/v4"
-FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL"]
+FREE_COMPETITIONS = ["PL", "PD", "BL1", "SA", "FL1", "DED", "BSA", "PPL", "CL", "EL", "WC"]
 DEFAULT_DAYS = 7
+
+COMPETITION_LABELS = {
+    "PL": "Premier League",
+    "PD": "La Liga",
+    "BL1": "Bundesliga",
+    "SA": "Serie A",
+    "FL1": "Ligue 1",
+    "DED": "Eredivisie",
+    "BSA": "Campeonato Brasileiro Série A",
+    "PPL": "Primeira Liga",
+    "CL": "Champions League",
+    "EL": "Europa League",
+    "WC": "World Cup",
+}
 
 COMPETITION_WEIGHTS = {
     "PL": 100,
@@ -20,6 +34,7 @@ COMPETITION_WEIGHTS = {
     "PPL": 80,
     "CL": 98,
     "EL": 88,
+    "WC": 99,
 }
 
 STATUS_WEIGHTS = {
@@ -65,6 +80,7 @@ def parse_utc(date_str):
 
 def normalize_match(match):
     full_time = match.get("score", {}).get("fullTime", {})
+    code = match.get("competition", {}).get("code", "")
     return {
         "id": match.get("id"),
         "provider": "football-data",
@@ -73,7 +89,8 @@ def normalize_match(match):
         "awayTeam": match.get("awayTeam", {}).get("name", ""),
         "competition": match.get("competition", {}).get("name", ""),
         "competitionId": match.get("competition", {}).get("id"),
-        "competitionCode": match.get("competition", {}).get("code"),
+        "competitionCode": code,
+        "competitionLabel": COMPETITION_LABELS.get(code, code),
         "status": match.get("status", ""),
         "scoreHome": full_time.get("home"),
         "scoreAway": full_time.get("away"),
@@ -163,7 +180,7 @@ def matches_to_df(matches):
         rows.append(
             {
                 "Date": dt.astimezone().strftime("%Y-%m-%d %H:%M") if dt else "",
-                "Competition": m.get("competition", ""),
+                "Competition": m.get("competitionLabel", m.get("competition", "")),
                 "Home": m.get("homeTeam", ""),
                 "Away": m.get("awayTeam", ""),
                 "Status": m.get("status", ""),
@@ -178,7 +195,7 @@ def render_match_card(m):
     dt = parse_utc(m.get("utcDate"))
     local_dt = dt.astimezone() if dt else None
     score = f'{m.get("scoreHome", "-")}-{m.get("scoreAway", "-")}'
-    st.write(f'**{m.get("competition", "")}**')
+    st.write(f'**{m.get("competitionLabel", m.get("competition", ""))}**')
     st.write(f'{m.get("homeTeam", "")} vs {m.get("awayTeam", "")}')
     st.write(f'[{local_dt.strftime("%Y-%m-%d %H:%M") if local_dt else ""}]  Status: {m.get("status", "")}  Score: {score}  Importance: {m.get("importance", 0)}')
     st.divider()
@@ -193,22 +210,25 @@ def main():
         selected_codes = load_competitions_to_use()
         raw_matches = load_all_matches(selected_codes)
         enriched = enrich_matches(raw_matches)
-        daily, weekly = split_by_date(enriched)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total matches", len(enriched))
-        c2.metric("Today", len(daily))
-        c3.metric("This week", len(weekly))
+        code_to_label = {code: COMPETITION_LABELS.get(code, code) for code in selected_codes}
+        selected_labels = [f"{code_to_label[c]} ({c})" for c in selected_codes]
 
         st.subheader("Competition filter")
-        active_codes = st.multiselect(
+        chosen_labels = st.multiselect(
             "Competitions",
-            options=selected_codes,
-            default=selected_codes,
+            options=selected_labels,
+            default=selected_labels,
         )
+        chosen_codes = {item.split("(")[-1].replace(")", "").strip() for item in chosen_labels}
 
-        active_matches = [m for m in enriched if m.get("competitionCode") in active_codes]
+        active_matches = [m for m in enriched if m.get("competitionCode") in chosen_codes]
         daily, weekly = split_by_date(active_matches)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total matches", len(active_matches))
+        c2.metric("Today", len(daily))
+        c3.metric("This week", len(weekly))
 
         st.subheader("Top matches for today")
         daily_limit = st.slider("Daily limit", 1, 20, 5)
@@ -226,7 +246,7 @@ def main():
         st.dataframe(matches_to_df(chosen), use_container_width=True)
 
         st.subheader("Competition details")
-        st.write(", ".join(selected_codes))
+        st.write(", ".join(selected_labels))
 
     except Exception as e:
         st.error(f"Failed to load matches: {e}")
